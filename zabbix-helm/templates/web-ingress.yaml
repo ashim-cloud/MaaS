@@ -1,0 +1,50 @@
+{{/*
+=============================================================================
+Zabbix Web — ALB Ingress
+=============================================================================
+Faithful conversion of the original zabbix-web-deploy.yaml Ingress.
+
+Changes from original:
+- Subnets are templated from vpc.publicSubnetIds (was hardcoded)
+- Scheme is parameterized via zabbixWeb.ingress.scheme
+- Host field is conditional: empty = catch-all (original behavior),
+  non-empty = adds a host rule for Route53/DNS-based routing
+*/}}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "zabbix.webIngressName" . }}
+  namespace: {{ include "zabbix.namespace" . }}
+  labels:
+    {{- include "zabbix.labels" . | nindent 4 }}
+    app: zabbix-web
+  annotations:
+    alb.ingress.kubernetes.io/scheme: {{ .Values.zabbixWeb.ingress.scheme | quote }}
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/subnets: {{ include "zabbix.subnetList" . | quote }}
+spec:
+  ingressClassName: alb
+  rules:
+    {{- if .Values.zabbixWeb.ingress.host }}
+    - host: {{ .Values.zabbixWeb.ingress.host | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "zabbix.webName" . }}
+                port:
+                  number: 80
+    {{- else }}
+    {{/* No host = catch-all rule (matches original manifest) */}}
+    - http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "zabbix.webName" . }}
+                port:
+                  number: 80
+    {{- end }}

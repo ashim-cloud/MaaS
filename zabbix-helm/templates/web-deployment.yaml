@@ -1,0 +1,64 @@
+{{/*
+=============================================================================
+Zabbix Web — Deployment
+=============================================================================
+Faithful conversion of the original zabbix-web-deploy.yaml Deployment.
+
+ZBX_SERVER_HOST points to the NLB service name (zabbix-server-active),
+which within the cluster resolves via ClusterIP (not the external LB).
+The NLB service selector filters to the active HA pod only.
+*/}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "zabbix.webName" . }}
+  namespace: {{ include "zabbix.namespace" . }}
+  labels:
+    {{- include "zabbix.labels" . | nindent 4 }}
+    app: zabbix-web
+spec:
+  replicas: {{ .Values.zabbixWeb.replicaCount }}
+  selector:
+    matchLabels:
+      app: zabbix-web
+  template:
+    metadata:
+      labels:
+        {{- include "zabbix.labels" . | nindent 8 }}
+        app: zabbix-web
+    spec:
+      containers:
+        - name: zabbix-web
+          image: {{ include "zabbix.webImage" . }}
+          env:
+            - name: DB_SERVER_HOST
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "zabbix.secretName" . }}
+                  key: host
+            - name: DB_SERVER_PORT
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "zabbix.secretName" . }}
+                  key: port
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "zabbix.secretName" . }}
+                  key: user
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "zabbix.secretName" . }}
+                  key: password
+            - name: POSTGRES_DB
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "zabbix.secretName" . }}
+                  key: dbname
+            - name: ZBX_SERVER_HOST
+              value: {{ include "zabbix.resolvedServerServiceName" . | quote }}
+            - name: PHP_TZ
+              value: {{ .Values.zabbixWeb.phpTz | quote }}
+          ports:
+            - containerPort: 8080

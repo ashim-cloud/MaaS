@@ -1,0 +1,15 @@
+{{/*
+=============================================================================
+Namespace — conditional creation
+=============================================================================
+Only created when namespace.create=true (default).
+Set namespace.create=false if the namespace is managed externally.
+*/}}
+{{- if .Values.namespace.create }}
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ include "zabbix.namespace" . }}
+  labels:
+    {{- include "zabbix.labels" . | nindent 4 }}
+{{- end }}
