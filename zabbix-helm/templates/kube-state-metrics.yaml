@@ -1,0 +1,210 @@
+{{/*
+=============================================================================
+kube-state-metrics — Cluster-wide Kubernetes object metrics exporter
+=============================================================================
+Deploys into the namespace specified by kubeStateMetrics.namespace (default:
+kube-system) because KSM is cluster-wide infrastructure shared by Zabbix's
+Kubernetes HTTP templates.
+
+All five resources are gated behind kubeStateMetrics.enabled (default: true).
+Disable with --set kubeStateMetrics.enabled=false if KSM is already installed
+in the cluster by another tool (e.g. kube-prometheus-stack).
+
+Configurable via values.yaml:
+  kubeStateMetrics.nameOverride   — resource name for all five objects
+  kubeStateMetrics.namespace      — target namespace (default: kube-system)
+  kubeStateMetrics.replicaCount   — Deployment replicas (default: 1)
+  kubeStateMetrics.resources.*    — container requests/limits
+  kubeStateMetrics.rbac.*         — per-apiGroup resource lists for ClusterRole
+
+Resources created:
+  - ServiceAccount     <nameOverride>   (<namespace>)
+  - ClusterRole        <nameOverride>   (cluster-scoped)
+  - ClusterRoleBinding <nameOverride>   (cluster-scoped)
+  - Deployment         <nameOverride>   (<namespace>)
+  - Service            <nameOverride>   (<namespace>, ports 8080 + 8081)
+*/}}
+
+{{- if .Values.kubeStateMetrics.enabled }}
+---
+# ----------------------------------------------------------------------------
+# ServiceAccount
+# ----------------------------------------------------------------------------
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "zabbix.ksmName" . }}
+  namespace: {{ include "zabbix.ksmNamespace" . }}
+  labels:
+    {{- include "zabbix.labels" . | nindent 4 }}
+    app: {{ include "zabbix.ksmName" . }}
+
+---
+# ----------------------------------------------------------------------------
+# ClusterRole — read-only access to all objects KSM reports on.
+# Resource lists are driven by values.yaml under kubeStateMetrics.rbac.*
+# so individual resources can be added/removed without touching templates.
+# ----------------------------------------------------------------------------
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "zabbix.ksmName" . }}
+  labels:
+    {{- include "zabbix.labels" . | nindent 4 }}
+    app: {{ include "zabbix.ksmName" . }}
+rules:
+  # Core API group
+  - apiGroups: [""]
+    resources:
+      {{- range .Values.kubeStateMetrics.rbac.coreResources }}
+      - {{ . }}
+      {{- end }}
+    verbs: ["list", "watch"]
+  # apps group
+  - apiGroups: ["apps"]
+    resources:
+      {{- range .Values.kubeStateMetrics.rbac.appsResources }}
+      - {{ . }}
+      {{- end }}
+    verbs: ["list", "watch"]
+  # autoscaling group
+  - apiGroups: ["autoscaling"]
+    resources:
+      {{- range .Values.kubeStateMetrics.rbac.autoscalingResources }}
+      - {{ . }}
+      {{- end }}
+    verbs: ["list", "watch"]
+  # batch group
+  - apiGroups: ["batch"]
+    resources:
+      {{- range .Values.kubeStateMetrics.rbac.batchResources }}
+      - {{ . }}
+      {{- end }}
+    verbs: ["list", "watch"]
+  # networking.k8s.io group
+  - apiGroups: ["networking.k8s.io"]
+    resources:
+      {{- range .Values.kubeStateMetrics.rbac.networkingResources }}
+      - {{ . }}
+      {{- end }}
+    verbs: ["list", "watch"]
+  # policy group
+  - apiGroups: ["policy"]
+    resources:
+      {{- range .Values.kubeStateMetrics.rbac.policyResources }}
+      - {{ . }}
+      {{- end }}
+    verbs: ["list", "watch"]
+  # storage.k8s.io group
+  - apiGroups: ["storage.k8s.io"]
+    resources:
+      {{- range .Values.kubeStateMetrics.rbac.storageResources }}
+      - {{ . }}
+      {{- end }}
+    verbs: ["list", "watch"]
+
+---
+# ----------------------------------------------------------------------------
+# ClusterRoleBinding
+# ----------------------------------------------------------------------------
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "zabbix.ksmName" . }}
+  labels:
+    {{- include "zabbix.labels" . | nindent 4 }}
+    app: {{ include "zabbix.ksmName" . }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "zabbix.ksmName" . }}
+    namespace: {{ include "zabbix.ksmNamespace" . }}
+roleRef:
+  kind: ClusterRole
+  name: {{ include "zabbix.ksmName" . }}
+  apiGroup: rbac.authorization.k8s.io
+
+---
+# ----------------------------------------------------------------------------
+# Deployment
+# Replica count is sourced from kubeStateMetrics.replicaCount (default: 1).
+# 1 replica is sufficient for KSM — it is a stateless metrics exporter.
+# ----------------------------------------------------------------------------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "zabbix.ksmName" . }}
+  namespace: {{ include "zabbix.ksmNamespace" . }}
+  labels:
+    {{- include "zabbix.labels" . | nindent 4 }}
+    app: {{ include "zabbix.ksmName" . }}
+spec:
+  replicas: {{ .Values.kubeStateMetrics.replicaCount }}
+  selector:
+    matchLabels:
+      app: {{ include "zabbix.ksmName" . }}
+  template:
+    metadata:
+      labels:
+        {{- include "zabbix.labels" . | nindent 8 }}
+        app: {{ include "zabbix.ksmName" . }}
+    spec:
+      serviceAccountName: {{ include "zabbix.ksmName" . }}
+      containers:
+        - name: kube-state-metrics
+          image: {{ include "zabbix.ksmImage" . }}
+          ports:
+            - name: http-metrics
+              containerPort: 8080
+            - name: telemetry
+              containerPort: 8081
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: {{ .Values.kubeStateMetrics.resources.requests.cpu }}
+              memory: {{ .Values.kubeStateMetrics.resources.requests.memory }}
+            limits:
+              cpu: {{ .Values.kubeStateMetrics.resources.limits.cpu }}
+              memory: {{ .Values.kubeStateMetrics.resources.limits.memory }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsUser: 65534
+            runAsNonRoot: true
+
+---
+# ----------------------------------------------------------------------------
+# Service — ClusterIP on ports 8080 (metrics) and 8081 (telemetry).
+# In-cluster DNS: http://<nameOverride>.<namespace>.svc.cluster.local:8080
+# Zabbix macro: {$KUBE.STATE.METRICS.ENDPOINT}
+# ----------------------------------------------------------------------------
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "zabbix.ksmName" . }}
+  namespace: {{ include "zabbix.ksmNamespace" . }}
+  labels:
+    {{- include "zabbix.labels" . | nindent 4 }}
+    app: {{ include "zabbix.ksmName" . }}
+spec:
+  type: ClusterIP
+  selector:
+    app: {{ include "zabbix.ksmName" . }}
+  ports:
+    - name: http-metrics
+      port: 8080
+      targetPort: http-metrics
+    - name: telemetry
+      port: 8081
+      targetPort: telemetry
+{{- end }}

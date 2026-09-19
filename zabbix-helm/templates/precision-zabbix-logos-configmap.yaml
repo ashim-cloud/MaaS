@@ -1,0 +1,20 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: precision-zabbix-logos
+  namespace: {{ .Release.Namespace }}
+data:
+  blue-theme.css: |
+{{ .Files.Get "files/branding/blue-theme.css" | indent 4 }}
+
+  precision-full-logo.svg: |
+{{ .Files.Get "files/branding/precision-full-logo.svg" | indent 4 }}
+
+  precision-sidebar-logo.svg: |
+{{ .Files.Get "files/branding/precision-sidebar-logo.svg" | indent 4 }}
+
+  precision-compact-logo.svg: |
+{{ .Files.Get "files/branding/precision-compact-logo.svg" | indent 4 }}
+
+binaryData:
+  favicon.ico: {{ .Files.Get "files/branding/precision-favicon.ico" | b64enc }}

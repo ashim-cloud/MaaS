@@ -1,0 +1,97 @@
+{{/*
+=============================================================================
+Zabbix Web — ALB Ingress
+=============================================================================
+This Ingress handles the Zabbix web frontend:
+  monitoring.hamms.space → zabbix-web Service (port 80 internally)
+
+ALB Listener rules:
+  Port 80  (HTTP)  → permanent 301 redirect to HTTPS (443)
+  Port 443 (HTTPS) → Host-header routing:
+      monitoring.hamms.space → zabbix-web  (this Ingress)
+
+Health check (Zabbix target group):
+  Path:         /        (Zabbix has no dedicated health endpoint)
+  Success code: 200
+
+Required values:
+  alb.acmCertificateArn         — wildcard ACM cert ARN (REQUIRED)
+  alb.groupName                 — ALB group name
+  alb.healthCheck.zabbix.path   — health check path (default: /)
+  alb.healthCheck.zabbix.successCodes
+  zabbixWeb.ingress.zabbixHost  — Zabbix subdomain
+  vpc.publicSubnetIds           — public subnet IDs for ALB placement
+*/}}
+
+{{- if not .Values.alb.acmCertificateArn }}
+  {{- fail "alb.acmCertificateArn is required — set it via --set alb.acmCertificateArn=arn:aws:acm:..." }}
+{{- end }}
+
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "zabbix.webIngressName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "zabbix.labels" . | nindent 4 }}
+    app: zabbix-web
+  annotations:
+    # ── ALB group ─────────────────────────────────────────────────────────
+    alb.ingress.kubernetes.io/group.name: {{ .Values.alb.groupName | quote }}
+
+    # ── ALB placement & target type ──────────────────────────────────────────
+    alb.ingress.kubernetes.io/scheme: {{ .Values.zabbixWeb.ingress.scheme | quote }}
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/subnets: {{ include "zabbix.subnetList" . | quote }}
+
+    # ── SSL / HTTPS — ACM wildcard cert (*.hamms.space) ─────────────────────
+    # ARN is sourced from alb.acmCertificateArn in values — NEVER hardcoded.
+    alb.ingress.kubernetes.io/certificate-arn: {{ .Values.alb.acmCertificateArn | quote }}
+    alb.ingress.kubernetes.io/ssl-policy: "ELBSecurityPolicy-TLS13-1-2-2021-06"
+
+    # ── Listen on both 80 (HTTP redirect) and 443 (HTTPS) ───────────────────
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}, {"HTTPS": 443}]'
+
+    # ── Redirect all HTTP → HTTPS (port 80 → 443, 301 permanent) ────────────
+    alb.ingress.kubernetes.io/ssl-redirect: "443"
+
+    # ── AWS WAFv2 Web ACL (optional) ─────────────────────────────────────────
+    # Attaches to the ALB.
+    # Only added when alb.wafAclArn is set; leave empty to skip WAF attachment.
+    # ARN is sourced from alb.wafAclArn in values — NEVER hardcoded.
+    {{- if .Values.alb.wafAclArn }}
+    alb.ingress.kubernetes.io/wafv2-acl-arn: {{ .Values.alb.wafAclArn | quote }}
+    {{- end }}
+
+    # ── Zabbix target group health check ────────────────────────────────────
+    # Zabbix has no dedicated health endpoint — root path (/) returns HTTP 200.
+    alb.ingress.kubernetes.io/healthcheck-path: {{ .Values.alb.healthCheck.zabbix.path | quote }}
+    alb.ingress.kubernetes.io/success-codes: {{ .Values.alb.healthCheck.zabbix.successCodes | quote }}
+
+spec:
+  ingressClassName: alb
+  rules:
+    {{- if .Values.zabbixWeb.ingress.zabbixHost }}
+    # monitoring.hamms.space → zabbix-web (all paths, serves at /)
+    - host: {{ .Values.zabbixWeb.ingress.zabbixHost | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "zabbix.webName" . }}
+                port:
+                  number: 80
+    {{- else }}
+    {{/* No host set — catch-all rule. Use this before Route53 is configured. */}}
+    - http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "zabbix.webName" . }}
+                port:
+                  number: 80
+    {{- end }}

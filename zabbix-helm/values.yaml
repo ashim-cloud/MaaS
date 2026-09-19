@@ -1,0 +1,434 @@
+# =============================================================================
+# Zabbix Helm Chart — values.yaml
+# =============================================================================
+# This file defines all configurable values for the Zabbix monitoring stack.
+# Defaults here match the original manually-tested manifests unless noted.
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# Global Settings
+# ---------------------------------------------------------------------------
+
+zabbix:
+  # -- Zabbix version — single source of truth for all three image tags.
+  version: "7.0.30"
+  # -- Base image variant (e.g. "ubuntu", "alpine", "ol").
+  baseImage: "ubuntu"
+
+vpc:
+  # -- REQUIRED. AWS VPC ID where the EKS cluster runs.
+  # Used for documentation/reference; the LB Controller itself reads it at
+  # install time via its own --set vpcId flag.
+  id: "vpc-0bc5c5ce263d7b3a0"
+  # -- REQUIRED. List of public subnet IDs for NLB + ALB placement.
+  # Must contain at least 2 subnets (AWS requires 2+ AZs for ALB).
+  # Example: ["subnet-aaa", "subnet-bbb", "subnet-ccc"]
+  # Wired into BOTH the zabbix-server-active NLB Service annotations
+  # AND the zabbix-web-ingress ALB Ingress annotations.
+  publicSubnetIds: ["subnet-0d6782d8a98cc5561","subnet-025071875ab6a5dba","subnet-082486d3eaea6a8a2"]
+
+# ---------------------------------------------------------------------------
+# ALB — SSL / HTTPS + Ingress Settings
+# ---------------------------------------------------------------------------
+# The ALB terminates TLS. Internal cluster traffic (ALB → pods) stays HTTP.
+#
+# Architecture: A Kubernetes Ingress resource provisions an ALB via the
+# AWS Load Balancer Controller.
+#
+#   Zabbix Ingress  (web-ingress.yaml)    → monitoring.prestacknx.co.in
+#
+# ALB Listener rules:
+#   Port 80  (HTTP)  → redirect to 443 (HTTPS) — standard best practice
+#   Port 443 (HTTPS) → host-based routing:
+#     monitoring.prestacknx.co.in  → zabbix-web Service (internal port 80)
+#
+# NOTE: ACM certificate MUST cover the subdomain.
+# Use a wildcard cert (*.prestacknx.co.in) or a single-domain cert.
+
+alb:
+  # -- REQUIRED. ACM wildcard certificate ARN for HTTPS termination.
+  # Must cover all subdomains (*.prestacknx.co.in) or include both as SANs.
+  # SSL is terminated at the ALB; internal cluster traffic remains HTTP.
+  acmCertificateArn: "arn:aws:acm:ap-south-1:772603145339:certificate/c1849364-557b-44f6-83ce-185948744666"
+
+  # -- ALB Ingress Group name.
+  # Change only if you need a different ALB group name in your cluster.
+  groupName: "zabbix-shared"
+
+  # -- Optional. AWS WAFv2 Web ACL ARN to attach to the ALB.
+  # Leave empty ("") to skip WAF attachment.
+  # Set via --set or override here. NEVER hardcode the ARN.
+  # Example: arn:aws:wafv2:ap-south-1:123456789012:regional/webacl/MyWAF/uuid
+  wafAclArn: "arn:aws:wafv2:ap-south-1:772603145339:regional/webacl/MaaS-Dev-WAF/239dd602-6ace-4560-90f2-4a2cfba6959f"
+
+  # -- Per-application ALB health check configuration.
+  # Health check annotations are target-group level — they can differ per
+  # Ingress even when both Ingresses share the same ALB group.
+  healthCheck:
+    zabbix:
+      # Zabbix has no dedicated health endpoint — root path returns 200.
+      path: "/"
+      successCodes: "200"
+
+# ---------------------------------------------------------------------------
+# Database — External RDS PostgreSQL (SSM Parameter Store + Pod Identity)
+# ---------------------------------------------------------------------------
+# Zabbix database credentials are stored as SSM SecureString parameters and
+# injected into pods at startup via an initContainer. No Kubernetes Secret is
+# created — credentials never touch etcd or EC2 disk.
+#
+# Both zabbix-web and zabbix-server (including the ha-label-sidecar) share the
+# same SSM path and the same IAM role, but each has
+# its own ServiceAccount:
+#   zabbix-web     → <webName>-sa     (web-deployment.yaml)
+#   zabbix-server  → <saName>         (server-rbac.yaml, already chart-managed)
+#
+# SSM parameters expected under db.ssm.path (each a SecureString):
+#   <path>/host, <path>/port, <path>/dbname, <path>/user, <path>/password
+#
+# Prerequisites (one-time — see docs/eks-prerequisites.md Step 9):
+#   1. SSM SecureString parameters under db.ssm.path
+#   2. IAM role with ssm:GetParameter* + kms:Decrypt
+#   3. EKS Pod Identity associations for both ServiceAccounts
+#      (via aws eks create-pod-identity-association — NOT via values.yaml)
+
+db:
+  ssm:
+    # -- SSM Parameter Store path prefix that holds all Zabbix DB credentials.
+    # Parameters expected under this path (each as a SecureString):
+    #   <path>/host, <path>/port, <path>/dbname, <path>/user, <path>/password
+    # Example: "/zabbix-dev/zabbix-db-secret"
+    path: "/zabbix-dev/zabbix-db-secret"
+    # -- AWS region where the SSM parameters live.
+    region: "ap-south-1"
+
+# ---------------------------------------------------------------------------
+# Zabbix Server — StatefulSet (Native HA)
+# ---------------------------------------------------------------------------
+
+zabbixServer:
+  # -- Number of server replicas. Zabbix native HA supports 2+ nodes;
+  # one will be elected active, the rest are standby.
+  replicaCount: 2
+
+  image:
+    # -- Server image repository. Tag is auto-composed from zabbix.baseImage
+    # and zabbix.version (e.g. zabbix/zabbix-server-pgsql:ubuntu-7.0.27).
+    repository: "zabbix/zabbix-server-pgsql"
+
+  # -- Pod anti-affinity to spread server pods across nodes.
+  affinity:
+    # -- "preferred" (soft) or "required" (hard).
+    # Original manifest uses "preferred".
+    type: "preferred"
+    # -- Weight for preferred anti-affinity (1-100). Ignored if type=required.
+    weight: 100
+
+  # -- HA label sidecar — reads HA state from Postgres and patches pod labels.
+  haSidecar:
+    # -- Sidecar image. alpine/k8s includes kubectl and psql prerequisites.
+    image: "alpine/k8s:1.31.0"
+    # -- Label name applied to pods to indicate HA role (active/standby).
+    # This label is also used in the NLB Service selector.
+    labelName: "role"
+    # -- How often (seconds) the sidecar polls Postgres for HA state.
+    pollIntervalSeconds: 60
+
+  # -- SSM init container configuration.
+  ssmInit:
+    # -- Image used to fetch SSM parameters at pod startup.
+    # Must include the AWS CLI. The public ECR image is the official AWS CLI
+    # container and does not require registry authentication from within EKS.
+    image: "public.ecr.aws/aws-cli/aws-cli:latest"
+    # -- AWS region where the SSM parameters live.
+    # Should match db.ssm.region (kept separate so server can override if needed).
+    region: "ap-south-1"
+    # -- SSM Parameter Store path prefix for Zabbix DB credentials.
+    # Parameters expected: <path>/host, <path>/port, <path>/user,
+    # <path>/password, <path>/dbname (each a SecureString).
+    parameterPath: "/zabbix-dev/zabbix-db-secret"
+
+  # -- NLB Service configuration for external agent connectivity.
+  service:
+    nlb:
+      # -- "internet-facing" or "internal".
+      scheme: "internet-facing"
+      # -- Preserve the original client IP for agent connections.
+      preserveClientIp: true
+
+# ---------------------------------------------------------------------------
+# Zabbix Web — Deployment (nginx + pgsql frontend)
+# ---------------------------------------------------------------------------
+
+zabbixWeb:
+  # -- Number of web frontend replicas.
+  replicaCount: 2
+
+  image:
+    # -- Web image repository. Tag is auto-composed like the server image.
+    repository: "zabbix/zabbix-web-nginx-pgsql"
+
+  # -- PHP timezone for the Zabbix frontend.
+  phpTz: "Asia/Kolkata"
+
+  # -- ALB Ingress configuration.
+  ingress:
+    # -- "internet-facing" or "internal".
+    scheme: "internet-facing"
+
+    # -- Subdomain for the Zabbix web frontend.
+    # Route53: Create an ALIAS record  monitoring.prestacknx.co.in → ALB hostname.
+    # Example: "monitoring.prestacknx.co.in"
+    zabbixHost: "monitoring.prestacknx.co.in"
+
+
+
+  # -- Container resource requests and limits for the zabbix-web container.
+  resources:
+    requests:
+      cpu: 200m
+      memory: 300Mi
+    limits:
+      cpu: 1
+      memory: 1Gi
+
+  # -- HorizontalPodAutoscaler configuration.
+  # When enabled: true, the Deployment's `replicas` field is omitted entirely
+  # so Helm upgrades do not reset the live HPA-managed replica count.
+  # When enabled: false, the static zabbixWeb.replicaCount value is used.
+  autoscaling:
+    # -- Enable or disable the HPA.
+    enabled: true
+    # -- Minimum number of web pods the HPA will maintain.
+    minReplicas: 2
+    # -- Maximum number of web pods the HPA may scale up to.
+    maxReplicas: 5
+    # -- CPU utilization (%) that triggers scale-up.
+    targetCPUUtilizationPercentage: 90
+    # -- Memory utilization (%) that triggers scale-up.
+    targetMemoryUtilizationPercentage: 90
+    behavior:
+      scaleUp:
+        # -- Seconds to wait after a scale event before acting on another.
+        # Prevents thrashing during short-lived traffic spikes.
+        stabilizationWindowSeconds: 60
+        policy:
+          # -- "Pods" = add N pods per period; "Percent" = add N% of current.
+          type: Pods
+          # -- Number of pods to add per scale-up period.
+          value: 1
+          # -- How often (seconds) a scale-up step can fire.
+          periodSeconds: 60
+      scaleDown:
+        # -- Seconds to wait before scaling down after load drops.
+        # 240s avoids premature scale-down during load valleys.
+        stabilizationWindowSeconds: 240
+        policy:
+          type: Pods
+          # -- Number of pods to remove per scale-down period.
+          value: 1
+          # -- How often (seconds) a scale-down step can fire.
+          periodSeconds: 120
+
+# ---------------------------------------------------------------------------
+# kube-state-metrics — Kubernetes object metrics exporter
+# ---------------------------------------------------------------------------
+# Deploys kube-state-metrics into the kube-system namespace (cluster-wide
+# infra, not zabbix-prod). The Service is accessible at:
+#   http://kube-state-metrics.kube-system.svc.cluster.local:8080
+# which is wired into the Zabbix host macro {$KUBE.STATE.METRICS.ENDPOINT}.
+#
+# Set enabled: false if kube-state-metrics is already installed in your
+# cluster by another tool (e.g. kube-prometheus-stack) to avoid conflicts.
+
+kubeStateMetrics:
+  # -- Deploy kube-state-metrics as part of this chart.
+  enabled: true
+
+  # -- Name used for all five KSM resources (SA, ClusterRole, ClusterRoleBinding,
+  # Deployment, Service). Changing this also changes the in-cluster DNS name, so
+  # update {$KUBE.STATE.METRICS.ENDPOINT} in Zabbix if you override this.
+  nameOverride: "kube-state-metrics"
+
+  # -- Namespace KSM deploys into. Should be kube-system (cluster-wide infra).
+  namespace: "kube-system"
+
+  # -- Number of KSM replicas. 1 is sufficient — KSM is a stateless exporter.
+  replicaCount: 1
+
+  image:
+    # -- KSM image repository (official k8s registry).
+    repository: "registry.k8s.io/kube-state-metrics/kube-state-metrics"
+    # -- KSM image tag. Pin to a specific version for reproducible deployments.
+    # Check https://github.com/kubernetes/kube-state-metrics/releases for latest.
+    tag: "v2.13.0"
+
+  # -- Container resource requests and limits.
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 1
+      memory: 1Gi
+
+  # -- ClusterRole RBAC resource lists, grouped by API group.
+  # Modify these lists to add or remove KSM object types without touching templates.
+  rbac:
+    # Core API group ("") resources
+    coreResources:
+      - configmaps
+      - endpoints
+      - limitranges
+      - namespaces
+      - nodes
+      - persistentvolumeclaims
+      - persistentvolumes
+      - pods
+      - replicationcontrollers
+      - resourcequotas
+      - secrets
+      - services
+    # apps group resources
+    appsResources:
+      - daemonsets
+      - deployments
+      - replicasets
+      - statefulsets
+    # autoscaling group resources
+    autoscalingResources:
+      - horizontalpodautoscalers
+    # batch group resources
+    batchResources:
+      - cronjobs
+      - jobs
+    # networking.k8s.io group resources
+    networkingResources:
+      - ingresses
+      - networkpolicies
+    # policy group resources
+    policyResources:
+      - poddisruptionbudgets
+    # storage.k8s.io group resources
+    storageResources:
+      - storageclasses
+      - volumeattachments
+
+# ---------------------------------------------------------------------------
+# Zabbix Kubernetes Monitoring RBAC
+# ---------------------------------------------------------------------------
+# Creates the ServiceAccount, ClusterRole, ClusterRoleBinding, and a static
+# SA token Secret that Zabbix Server uses to query the Kubernetes API directly
+# for the built-in HTTP monitoring templates:
+#   - "Kubernetes cluster state by HTTP"
+#   - "Kubernetes API server by HTTP"
+#
+# The token is populated by the Kubernetes token controller after the Secret
+# is created. Extract it post-install and set it as the {$KUBE.API.TOKEN}
+# macro on the Zabbix host (see docs/eks-prerequisites.md for exact commands).
+#
+# Set enabled: false only if managing this RBAC externally (e.g. via a
+# separate kubectl apply, GitOps tool, or corporate policy enforcement).
+
+zabbixK8sMonitoring:
+  # -- Deploy the K8s monitoring ServiceAccount + RBAC + token Secret.
+  enabled: true
+
+  # -- Name used for the ServiceAccount, ClusterRole, and ClusterRoleBinding.
+  # Changing this does NOT affect the Zabbix API endpoint macro
+  # ({$KUBE.API.ENDPOINT} always points to kubernetes.default.svc.cluster.local),
+  # but DOES change the token extraction command (update tokenSecretName too).
+  nameOverride: "zabbix-k8s-monitoring"
+
+  # -- Name of the static long-lived SA token Secret (K8s 1.24+ pattern).
+  # Must be updated in docs/eks-prerequisites.md Step C if overridden.
+  tokenSecretName: "zabbix-k8s-monitoring-token"
+
+  # -- ClusterRole RBAC resource lists, grouped by API group.
+  # Modify these lists to add or remove API access without touching templates.
+  rbac:
+    # Core API group ("") resources — verbs: get, list, watch
+    coreResources:
+      - nodes
+      - nodes/proxy
+      - pods
+      - namespaces
+      - persistentvolumeclaims
+      - services
+      - endpoints
+      - events
+    # apps group resources — verbs: get, list, watch
+    appsResources:
+      - deployments
+      - daemonsets
+      - statefulsets
+      - replicasets
+    # batch group resources — verbs: get, list, watch
+    batchResources:
+      - jobs
+      - cronjobs
+    # metrics.k8s.io group resources — verbs: get, list (requires metrics-server)
+    metricsResources:
+      - nodes
+      - pods
+
+# ---------------------------------------------------------------------------
+# CloudWatch Metric Fetcher — zabbix-aws-monitor Deployment
+# ---------------------------------------------------------------------------
+# Deploys a custom Docker image that fetches CloudWatch metrics from client
+# AWS accounts (via sts:AssumeRole) and pushes them to Zabbix via the Zabbix
+# API and Zabbix Sender (trapper).
+#
+# The pod authenticates to Zabbix using an API token stored in SSM Parameter
+# Store (awsMonitor.env.ssmTokenParam), fetched at runtime via EKS Pod
+# Identity (IAM role created in docs/eks-prerequisites.md Step 6).
+#
+# Prerequisites (one-time — see docs/eks-prerequisites.md Step 6):
+#   1. SSM SecureString parameter for Zabbix API token
+#   2. IAM role with ssm:GetParameter + kms:Decrypt + sts:AssumeRole
+#   3. EKS Pod Identity association for the ServiceAccount
+#      (via aws eks create-pod-identity-association — NOT via values.yaml)
+#   4. Custom Docker image pushed to ECR
+
+awsMonitor:
+  # -- Deploy the zabbix-aws-monitor Deployment and ServiceAccount.
+  enabled: true
+
+  # -- Number of replicas. 1 is sufficient — the monitor is a single poller.
+  replicaCount: 1
+
+  image:
+    # -- ECR image repository for the custom zabbix-aws-monitor image.
+    repository: "772603145339.dkr.ecr.ap-south-1.amazonaws.com/zabbix-aws-monitor"
+    # -- Image tag. Pin to a specific version for reproducible deployments.
+    tag: "latest"
+    # -- Image pull policy. "Always" ensures latest tag is re-pulled.
+    pullPolicy: "Always"
+
+  # -- ServiceAccount name — must match the Pod Identity association name
+  # created in docs/eks-prerequisites.md Step 6d.
+  serviceAccountName: "fetch-cloudwatch-metric"
+
+  # -- Environment variables for the zabbix-aws-monitor container.
+  env:
+    # -- Zabbix JSON-RPC API endpoint (internal cluster URL).
+    # Auto-composed from release name: http://<release>-web.<namespace>.svc:80/api_jsonrpc.php
+    zabbixApiUrl: "http://zabbix-web.zabbix-dev.svc:80/api_jsonrpc.php"
+    # -- Zabbix Server active/trapper hostname (NLB service internal DNS).
+    # Auto-composed from release name: <release>-server-active.<namespace>.svc
+    zabbixServerHost: "zabbix-server-active.zabbix-dev.svc"
+    # -- Zabbix Server trapper port.
+    zabbixServerPort: "10051"
+    # -- SSM Parameter Store path for the Zabbix API token.
+    ssmTokenParam: "/zabbix-dev/zabbix-api-token"
+    # -- AWS region for SSM and CloudWatch API calls.
+    awsDefaultRegion: "ap-south-1"
+
+  # -- Container resource requests and limits.
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi

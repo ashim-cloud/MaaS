@@ -1,0 +1,62 @@
+{{/*
+=============================================================================
+Zabbix Web — HorizontalPodAutoscaler
+=============================================================================
+Scales the zabbix-web Deployment between minReplicas and maxReplicas based
+on CPU and memory utilization.
+
+Gated behind zabbixWeb.autoscaling.enabled (default: true).
+
+Important: when autoscaling.enabled is true, the zabbix-web Deployment
+template omits the `replicas` field entirely so that Helm upgrades do not
+reset the live replica count back to zabbixWeb.replicaCount on every apply.
+The HPA owns replica count when enabled.
+
+All thresholds, windows, and policy values are sourced from
+zabbixWeb.autoscaling.* in values.yaml.
+*/}}
+
+{{- if .Values.zabbixWeb.autoscaling.enabled }}
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "zabbix.webName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "zabbix.labels" . | nindent 4 }}
+    app: zabbix-web
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "zabbix.webName" . }}
+  minReplicas: {{ .Values.zabbixWeb.autoscaling.minReplicas }}
+  maxReplicas: {{ .Values.zabbixWeb.autoscaling.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.zabbixWeb.autoscaling.targetCPUUtilizationPercentage }}
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.zabbixWeb.autoscaling.targetMemoryUtilizationPercentage }}
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: {{ .Values.zabbixWeb.autoscaling.behavior.scaleUp.stabilizationWindowSeconds }}
+      policies:
+        - type: {{ .Values.zabbixWeb.autoscaling.behavior.scaleUp.policy.type }}
+          value: {{ .Values.zabbixWeb.autoscaling.behavior.scaleUp.policy.value }}
+          periodSeconds: {{ .Values.zabbixWeb.autoscaling.behavior.scaleUp.policy.periodSeconds }}
+    scaleDown:
+      stabilizationWindowSeconds: {{ .Values.zabbixWeb.autoscaling.behavior.scaleDown.stabilizationWindowSeconds }}
+      policies:
+        - type: {{ .Values.zabbixWeb.autoscaling.behavior.scaleDown.policy.type }}
+          value: {{ .Values.zabbixWeb.autoscaling.behavior.scaleDown.policy.value }}
+          periodSeconds: {{ .Values.zabbixWeb.autoscaling.behavior.scaleDown.policy.periodSeconds }}
+{{- end }}

@@ -1,0 +1,369 @@
+{{/*
+=============================================================================
+Zabbix Server — StatefulSet (Native HA)
+=============================================================================
+
+SSM-based secret architecture:
+
+  SSM SecureString
+        |
+        v
+  ssm-init container  (validates AWS identity, fetches + validates all keys)
+        |
+        v
+  memory-backed emptyDir  (emptyDir: medium: Memory — never touches disk)
+        |
+        +------------------+
+        |                  |
+        v                  v
+  zabbix-server       ha-label-sidecar
+  (docker-entrypoint  (apk postgresql-client,
+   reads /secrets/*)   tests DB conn, polls
+                        ha_node, patches label)
+
+No Kubernetes Secret or secretKeyRef is used anywhere in this pod.
+
+Key behaviors preserved:
+- serviceName matches the headless Service for stable pod DNS
+- ZBX_HANODENAME sourced from hostname (== pod name in StatefulSet)
+- Two containers: zabbix-server + ha-label-sidecar
+- Sidecar polls Postgres ha_node table and patches pod labels only on change
+
+Configurable via values.yaml:
+  zabbixServer.replicaCount            — HA replica count
+  zabbixServer.affinity.type/weight    — pod anti-affinity mode
+  zabbixServer.ssmInit.image           — AWS CLI image for ssm-init
+  zabbixServer.ssmInit.region          — AWS region for SSM
+  zabbixServer.ssmInit.parameterPath   — SSM path prefix
+  zabbixServer.haSidecar.image         — alpine/k8s sidecar image
+  zabbixServer.haSidecar.labelName     — HA role label key
+  zabbixServer.haSidecar.pollIntervalSeconds — poll cadence
+*/}}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "zabbix.serverName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "zabbix.labels" . | nindent 4 }}
+    app: zabbix-server
+
+spec:
+  serviceName: {{ include "zabbix.serverName" . }}
+  replicas: {{ .Values.zabbixServer.replicaCount }}
+
+  selector:
+    matchLabels:
+      app: zabbix-server
+
+  template:
+    metadata:
+      labels:
+        {{- include "zabbix.labels" . | nindent 8 }}
+        app: zabbix-server
+
+    spec:
+      serviceAccountName: {{ include "zabbix.saName" . }}
+
+      affinity:
+        podAntiAffinity:
+          {{- if eq .Values.zabbixServer.affinity.type "required" }}
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchExpressions:
+                  - key: app
+                    operator: In
+                    values:
+                      - zabbix-server
+              topologyKey: "kubernetes.io/hostname"
+          {{- else }}
+          {{/* Default: preferred (matches original manifest) */}}
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: {{ .Values.zabbixServer.affinity.weight }}
+              podAffinityTerm:
+                labelSelector:
+                  matchExpressions:
+                    - key: app
+                      operator: In
+                      values:
+                        - zabbix-server
+                topologyKey: "kubernetes.io/hostname"
+          {{- end }}
+
+      volumes:
+        # Memory-only volume.
+        # Each StatefulSet pod gets its own independent instance.
+        - name: secrets-vol
+          emptyDir:
+            medium: Memory
+
+      # ================================================================
+      # Container initialization
+      # ================================================================
+      initContainers:
+
+        # --------------------------------------------------------------
+        # Container 0: SSM initialization
+        # Fetches all Zabbix DB credentials from SSM Parameter Store,
+        # writes each to /secrets/<key>, and validates all required keys
+        # exist and are non-empty before allowing the pod to start.
+        # --------------------------------------------------------------
+        - name: ssm-init
+          image: {{ .Values.zabbixServer.ssmInit.image }}
+
+          env:
+            - name: AWS_DEFAULT_REGION
+              value: {{ .Values.zabbixServer.ssmInit.region | quote }}
+
+            - name: SSM_PATH
+              value: {{ .Values.zabbixServer.ssmInit.parameterPath | quote }}
+
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -eu
+
+              echo "=== SSM initialization ==="
+
+              echo "Pod: $(hostname)"
+
+              echo
+              echo "AWS identity:"
+              aws sts get-caller-identity
+
+              echo
+              echo "Fetching SSM parameters from: $SSM_PATH"
+
+              aws ssm get-parameters-by-path \
+                --path "$SSM_PATH" \
+                --with-decryption \
+                --recursive \
+                --query 'Parameters[*].[Name,Value]' \
+                --output text |
+              while IFS="$(printf '\t')" read -r name value; do
+
+                key="$(basename "$name")"
+
+                if [ -z "$key" ] || [ -z "$value" ]; then
+                  echo "ERROR: Empty parameter name or value"
+                  exit 1
+                fi
+
+                printf '%s' "$value" > "/secrets/$key"
+
+                echo "Fetched: $key"
+
+              done
+
+              echo
+              echo "Validating required parameters..."
+
+              for key in host port user password dbname; do
+                if [ ! -s "/secrets/$key" ]; then
+                  echo "ERROR: Missing or empty /secrets/$key"
+                  exit 1
+                fi
+
+                echo "OK: $key"
+              done
+
+              echo
+              echo "=== SSM initialization SUCCESS ==="
+
+          volumeMounts:
+            - name: secrets-vol
+              mountPath: /secrets
+
+
+      containers:
+
+        # ================================================================
+        # Container 1: Zabbix Server
+        # ================================================================
+        - name: zabbix-server
+          image: {{ include "zabbix.serverImage" . }}
+
+          ports:
+            - containerPort: 10051
+              name: zabbix-server
+
+          volumeMounts:
+            - name: secrets-vol
+              mountPath: /secrets
+              readOnly: true
+
+          command:
+            - /bin/bash
+            - -c
+            - |
+              set -eu
+
+              POD_NAME="$(hostname)"
+
+              echo "=== Zabbix Server ==="
+              echo "Pod: $POD_NAME"
+
+              echo
+              echo "Loading DB configuration from memory-backed SSM volume..."
+
+              export DB_SERVER_HOST="$(cat /secrets/host)"
+              export DB_SERVER_PORT="$(cat /secrets/port)"
+              export POSTGRES_USER="$(cat /secrets/user)"
+              export POSTGRES_PASSWORD="$(cat /secrets/password)"
+              export POSTGRES_DB="$(cat /secrets/dbname)"
+
+              export ZBX_HANODENAME="$POD_NAME"
+
+              echo "DB_SERVER_HOST: configured"
+              echo "DB_SERVER_PORT: configured"
+              echo "POSTGRES_USER: configured"
+              echo "POSTGRES_PASSWORD: configured"
+              echo "POSTGRES_DB: configured"
+              echo "ZBX_HANODENAME: $ZBX_HANODENAME"
+
+              echo
+              echo "Starting Zabbix Server..."
+
+              exec docker-entrypoint.sh -f
+
+
+        # ================================================================
+        # Container 2: HA Label Sidecar
+        # ================================================================
+        # Polls Postgres ha_node table to determine which server pod is
+        # the active HA node, then patches the pod's label so the NLB
+        # Service selector routes traffic only to the active instance.
+        # Label is only written when it changes, reducing API server load.
+        #
+        # Reads DB credentials from the same memory-backed /secrets volume
+        # written by ssm-init — no secretKeyRef or environment variable
+        # injection from Kubernetes is used for DB credentials.
+        - name: ha-label-sidecar
+          image: {{ .Values.zabbixServer.haSidecar.image }}
+
+          volumeMounts:
+            - name: secrets-vol
+              mountPath: /secrets
+              readOnly: true
+
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -eu
+
+              echo "=== HA label sidecar ==="
+
+              echo
+              echo "Installing PostgreSQL client..."
+
+              apk add --no-cache postgresql-client
+
+              echo
+              echo "PostgreSQL client installed."
+
+              POD_NAME="$(hostname)"
+              POD_NAMESPACE="$(cat /var/run/secrets/kubernetes.io/serviceaccount/namespace)"
+
+              echo
+              echo "Pod: $POD_NAME"
+              echo "Namespace: $POD_NAMESPACE"
+
+              echo
+              echo "Loading DB configuration from memory-backed SSM volume..."
+
+              DB_HOST="$(cat /secrets/host)"
+              DB_PORT="$(cat /secrets/port)"
+              POSTGRES_USER="$(cat /secrets/user)"
+              POSTGRES_PASSWORD="$(cat /secrets/password)"
+              POSTGRES_DB="$(cat /secrets/dbname)"
+
+              echo "DB_HOST: configured"
+              echo "DB_PORT: configured"
+              echo "POSTGRES_USER: configured"
+              echo "POSTGRES_PASSWORD: configured"
+              echo "POSTGRES_DB: configured"
+
+              echo
+              echo "Checking Kubernetes permissions..."
+
+              if [ "$(kubectl auth can-i get pods -n "$POD_NAMESPACE")" != "yes" ]; then
+                echo "ERROR: ServiceAccount cannot get pods"
+                exit 1
+              fi
+
+              if [ "$(kubectl auth can-i patch pods -n "$POD_NAMESPACE")" != "yes" ]; then
+                echo "ERROR: ServiceAccount cannot patch pods"
+                exit 1
+              fi
+
+              echo "Kubernetes permissions OK."
+
+              echo
+              echo "Testing PostgreSQL connection..."
+
+              PGPASSWORD="$POSTGRES_PASSWORD" psql \
+                -h "$DB_HOST" \
+                -p "$DB_PORT" \
+                -U "$POSTGRES_USER" \
+                -d "$POSTGRES_DB" \
+                -tAc "SELECT 1;"
+
+              echo
+              echo "PostgreSQL connection successful."
+
+              echo
+              echo "Starting HA role monitoring..."
+
+              while true; do
+
+                ACTIVE_NODE=$(
+                  PGPASSWORD="$POSTGRES_PASSWORD" psql \
+                    -h "$DB_HOST" \
+                    -p "$DB_PORT" \
+                    -U "$POSTGRES_USER" \
+                    -d "$POSTGRES_DB" \
+                    -tAc "SELECT name FROM ha_node WHERE status=3 LIMIT 1;" \
+                    2>/dev/null
+                )
+
+                ACTIVE_NODE="$(echo "$ACTIVE_NODE" | xargs)"
+
+                if [ "$ACTIVE_NODE" = "$POD_NAME" ]; then
+                  ROLE="active"
+                else
+                  ROLE="standby"
+                fi
+
+                CURRENT_ROLE=$(
+                  kubectl get pod "$POD_NAME" \
+                    -n "$POD_NAMESPACE" \
+                    -o jsonpath='{.metadata.labels.{{ .Values.zabbixServer.haSidecar.labelName | quote }}}' \
+                    2>/dev/null || true
+                )
+
+                if [ "$CURRENT_ROLE" = "$ROLE" ]; then
+
+                  echo "$(date): HA role unchanged: $ROLE"
+
+                else
+
+                  if [ -n "$CURRENT_ROLE" ]; then
+                    echo "$(date): HA role changed: $CURRENT_ROLE -> $ROLE"
+                  else
+                    echo "$(date): HA role initialized: $ROLE"
+                  fi
+
+                  kubectl label pod "$POD_NAME" \
+                    -n "$POD_NAMESPACE" \
+                    {{ .Values.zabbixServer.haSidecar.labelName }}="$ROLE" \
+                    --overwrite >/dev/null
+
+                  echo "$(date): HA role label updated to: $ROLE"
+
+                fi
+
+                sleep {{ .Values.zabbixServer.haSidecar.pollIntervalSeconds }}
+
+              done

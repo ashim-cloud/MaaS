@@ -1,0 +1,159 @@
+{{/*
+=============================================================================
+Zabbix Web — ServiceAccount + Deployment
+=============================================================================
+Faithful conversion of the original zabbix-web-deploy.yaml Deployment.
+
+ZBX_SERVER_HOST points to the NLB service name (zabbix-server-active),
+which within the cluster resolves via ClusterIP (not the external LB).
+The NLB service selector filters to the active HA pod only.
+
+Secrets method: AWS SSM Parameter Store + EKS Pod Identity
+  An initContainer (ssm-init) fetches all DB parameters under
+  db.ssm.path at pod startup and writes each to an in-memory volume
+  (emptyDir: medium: Memory). The zabbix-web container reads them from
+  /secrets/* via a shell command before exec-ing docker-entrypoint.sh.
+  Nothing is persisted to etcd or EC2 disk.
+
+Resources created:
+  - ServiceAccount  <webName>-sa   (release namespace, EKS Pod Identity)
+  - Deployment      <webName>      (release namespace)
+*/}}
+---
+# ----------------------------------------------------------------------------
+# ServiceAccount — used by EKS Pod Identity to assume the Zabbix IAM role.
+# ----------------------------------------------------------------------------
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "zabbix.webSaName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "zabbix.labels" . | nindent 4 }}
+    app: zabbix-web
+---
+# ----------------------------------------------------------------------------
+# Deployment
+# ----------------------------------------------------------------------------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "zabbix.webName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "zabbix.labels" . | nindent 4 }}
+    app: zabbix-web
+spec:
+  {{- if not .Values.zabbixWeb.autoscaling.enabled }}
+  replicas: {{ .Values.zabbixWeb.replicaCount }}
+  {{- end }}
+  selector:
+    matchLabels:
+      app: zabbix-web
+  template:
+    metadata:
+      labels:
+        {{- include "zabbix.labels" . | nindent 8 }}
+        app: zabbix-web
+    spec:
+      serviceAccountName: {{ include "zabbix.webSaName" . }}
+
+      # ---- In-memory volume — secrets written here by the initContainer ------
+      volumes:
+        - name: secrets-vol
+          emptyDir:
+            medium: Memory
+        - name: precision-zabbix-logos
+          configMap:
+            name: precision-zabbix-logos
+
+      # ---- initContainer: pull SSM parameters before zabbix-web starts -------
+      initContainers:
+        - name: ssm-init
+          image: public.ecr.aws/aws-cli/aws-cli:latest
+          env:
+            - name: AWS_DEFAULT_REGION
+              value: {{ .Values.db.ssm.region | quote }}
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -e
+              SSM_PATH={{ .Values.db.ssm.path | quote }}
+              aws ssm get-parameters-by-path \
+                --path "$SSM_PATH" \
+                --with-decryption \
+                --recursive \
+                --query "Parameters[*].[Name,Value]" \
+                --output text \
+              | while IFS=$'\t' read -r name value; do
+                  key=$(basename "$name")
+                  printf '%s' "$value" > "/secrets/$key"
+                done
+              echo "ssm-init: wrote $(ls /secrets | wc -l) secret(s) from $SSM_PATH"
+          volumeMounts:
+            - name: secrets-vol
+              mountPath: /secrets
+
+      containers:
+        - name: zabbix-web
+          image: {{ include "zabbix.webImage" . }}
+
+          # ---- DB credentials sourced from in-memory /secrets/* --------------
+          # Reads each secret file written by ssm-init, exports the env var,
+          # then exec-replaces itself with docker-entrypoint.sh so PID 1 is the
+          # real entrypoint (correct signal handling, no shell wrapper overhead).
+          command:
+            - /bin/sh
+            - -c
+            - |
+              export DB_SERVER_HOST=$(cat /secrets/host)
+              export DB_SERVER_PORT=$(cat /secrets/port)
+              export POSTGRES_USER=$(cat /secrets/user)
+              export POSTGRES_PASSWORD=$(cat /secrets/password)
+              export POSTGRES_DB=$(cat /secrets/dbname)
+              exec docker-entrypoint.sh
+
+          env:
+            - name: ZBX_SERVER_HOST
+              value: {{ include "zabbix.serverActiveServiceName" . | quote }}
+            - name: PHP_TZ
+              value: {{ .Values.zabbixWeb.phpTz | quote }}
+            - name: ZBX_SERVER_NAME
+              value: "Prestack Monitoring"
+
+          ports:
+            - containerPort: 8080
+
+          volumeMounts:
+            - name: secrets-vol
+              mountPath: /secrets
+              readOnly: true
+            - mountPath: /usr/share/zabbix/assets/styles/blue-theme.css
+              name: precision-zabbix-logos
+              readOnly: true
+              subPath: blue-theme.css
+            - mountPath: /usr/share/zabbix/assets/precision-full-logo.svg
+              name: precision-zabbix-logos
+              readOnly: true
+              subPath: precision-full-logo.svg
+            - mountPath: /usr/share/zabbix/assets/precision-sidebar-logo.svg
+              name: precision-zabbix-logos
+              readOnly: true
+              subPath: precision-sidebar-logo.svg
+            - mountPath: /usr/share/zabbix/assets/precision-compact-logo.svg
+              name: precision-zabbix-logos
+              readOnly: true
+              subPath: precision-compact-logo.svg
+            - mountPath: /usr/share/zabbix/favicon.ico
+              name: precision-zabbix-logos
+              readOnly: true
+              subPath: favicon.ico
+
+          resources:
+            requests:
+              cpu: {{ .Values.zabbixWeb.resources.requests.cpu }}
+              memory: {{ .Values.zabbixWeb.resources.requests.memory }}
+            limits:
+              cpu: {{ .Values.zabbixWeb.resources.limits.cpu }}
+              memory: {{ .Values.zabbixWeb.resources.limits.memory }}

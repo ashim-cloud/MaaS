@@ -1,0 +1,86 @@
+{{/*
+=============================================================================
+CloudWatch Metric Fetcher — ServiceAccount + Deployment
+=============================================================================
+Deploys the custom zabbix-aws-monitor container that:
+  1. Reads the Zabbix API token from SSM Parameter Store (via Pod Identity)
+  2. Assumes cross-account IAM roles (Precision-Monitoring-Role)
+  3. Fetches CloudWatch metrics from client AWS accounts
+  4. Pushes metrics to Zabbix via the JSON-RPC API and Zabbix Sender (trapper)
+
+Resources created (when awsMonitor.enabled = true):
+  - ServiceAccount  <awsMonitorSaName>     (release namespace, EKS Pod Identity)
+  - Deployment      <awsMonitorName>       (release namespace)
+
+The ServiceAccount name is configurable (awsMonitor.serviceAccountName) because
+it must exactly match the EKS Pod Identity association created out-of-band in
+docs/eks-prerequisites.md Step 6d.
+*/}}
+{{- if .Values.awsMonitor.enabled }}
+---
+# ----------------------------------------------------------------------------
+# ServiceAccount — used by EKS Pod Identity to assume the CloudWatch
+# Metric Fetcher IAM role.
+# ----------------------------------------------------------------------------
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "zabbix.awsMonitorSaName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "zabbix.labels" . | nindent 4 }}
+    app: zabbix-aws-monitor
+---
+# ----------------------------------------------------------------------------
+# Deployment
+# ----------------------------------------------------------------------------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "zabbix.awsMonitorName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "zabbix.labels" . | nindent 4 }}
+    app: zabbix-aws-monitor
+spec:
+  replicas: {{ .Values.awsMonitor.replicaCount }}
+  selector:
+    matchLabels:
+      app: zabbix-aws-monitor
+  template:
+    metadata:
+      labels:
+        {{- include "zabbix.labels" . | nindent 8 }}
+        app: zabbix-aws-monitor
+    spec:
+      serviceAccountName: {{ include "zabbix.awsMonitorSaName" . }}
+
+      containers:
+        - name: zabbix-aws-monitor
+          image: {{ include "zabbix.awsMonitorImage" . }}
+          imagePullPolicy: {{ .Values.awsMonitor.image.pullPolicy }}
+
+          env:
+            - name: PYTHONUNBUFFERED
+              value: "1"
+            - name: ZABBIX_API_URL
+              value: {{ .Values.awsMonitor.env.zabbixApiUrl | quote }}
+            - name: ZABBIX_SERVER_HOST
+              value: {{ .Values.awsMonitor.env.zabbixServerHost | quote }}
+            - name: ZABBIX_SERVER_PORT
+              value: {{ .Values.awsMonitor.env.zabbixServerPort | quote }}
+            - name: SSM_TOKEN_PARAM
+              value: {{ .Values.awsMonitor.env.ssmTokenParam | quote }}
+            - name: AWS_DEFAULT_REGION
+              value: {{ .Values.awsMonitor.env.awsDefaultRegion | quote }}
+
+          resources:
+            requests:
+              cpu: {{ .Values.awsMonitor.resources.requests.cpu }}
+              memory: {{ .Values.awsMonitor.resources.requests.memory }}
+            limits:
+              cpu: {{ .Values.awsMonitor.resources.limits.cpu }}
+              memory: {{ .Values.awsMonitor.resources.limits.memory }}
+
+      restartPolicy: Always
+{{- end }}

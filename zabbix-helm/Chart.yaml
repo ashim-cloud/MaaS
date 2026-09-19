@@ -1,0 +1,18 @@
+apiVersion: v2
+name: zabbix
+description: >-
+  Production Zabbix monitoring stack (server HA, web) for AWS EKS
+  with external RDS PostgreSQL. Server runs native HA via StatefulSet with
+  a sidecar that patches Kubernetes labels based on Postgres HA state.
+  Agent2 DaemonSet removed in v1.1.0 — external agents connect directly
+  via the NLB (zabbix-server-active).
+type: application
+version: 1.1.0
+appVersion: "7.0.27"
+keywords:
+  - zabbix
+  - monitoring
+  - eks
+  - ha
+maintainers:
+  - name: Platform Team

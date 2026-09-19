@@ -1,0 +1,126 @@
+{{/*
+=============================================================================
+NOTES.txt — Post-install instructions
+=============================================================================
+*/}}
+=======================================================================
+  Zabbix Monitoring Stack — Deployed Successfully
+=======================================================================
+
+Namespace:  {{ .Release.Namespace }}
+Version:    {{ .Values.zabbix.version }}
+HA Replicas: {{ .Values.zabbixServer.replicaCount }}
+
+-----------------------------------------------------------------------
+  1. Check Zabbix Server HA Status
+-----------------------------------------------------------------------
+
+  # Wait for pods to be ready
+  kubectl get pods -n {{ .Release.Namespace }} -l app=zabbix-server -o wide
+
+  # Check HA node status
+  kubectl exec -n {{ .Release.Namespace }} {{ include "zabbix.serverName" . }}-0 \
+    -- zabbix_server -R ha_status
+
+  # Verify HA labels (one pod should be "active", rest "standby")
+  kubectl get pods -n {{ .Release.Namespace }} -l app=zabbix-server --show-labels
+
+-----------------------------------------------------------------------
+  2. Get NLB Address (for external agent clients)
+-----------------------------------------------------------------------
+
+  kubectl get svc {{ include "zabbix.serverActiveServiceName" . }} \
+    -n {{ .Release.Namespace }} \
+    -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'
+
+  External agents should connect to this hostname on port 10051.
+
+-----------------------------------------------------------------------
+  3. Get ALB Address (Zabbix Web Frontend)
+-----------------------------------------------------------------------
+
+  kubectl get ingress {{ include "zabbix.webIngressName" . }} \
+    -n {{ .Release.Namespace }} \
+    -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'
+
+  ALB Routing (HTTPS — SSL terminated at ALB via ACM):
+    https://<alb-or-domain>/  → Zabbix web frontend
+
+  HTTP port 80 is automatically redirected to HTTPS 443.
+  Internal cluster traffic (ALB → pods) stays on HTTP port 80.
+
+  To attach a custom domain:
+    1. Copy the ALB hostname from the command above.
+    2. In Route53, create an ALIAS (or CNAME) record pointing
+       your domain to the ALB hostname.
+    3. Set zabbixWeb.ingress.host: "your.domain.com" in values
+       and run `helm upgrade` — the Ingress will then enforce
+       host-based routing so there are no conflicts.
+
+  Default Zabbix login: Admin / zabbix
+
+-----------------------------------------------------------------------
+  REMINDER: Database Prerequisites
+-----------------------------------------------------------------------
+
+  This chart assumes the following already exist before `helm install`:
+
+  1. Namespace: {{ .Release.Namespace }}
+     kubectl create namespace {{ .Release.Namespace }}
+
+  2. Zabbix database Secret: {{ .Values.db.existingSecret }}
+     kubectl create secret generic {{ .Values.db.existingSecret }} \
+       -n {{ .Release.Namespace }} \
+       --from-literal=host=YOUR_RDS_ENDPOINT \
+       --from-literal=port=5432 \
+       --from-literal=dbname=zabbix \
+       --from-literal=user=zabbix \
+       --from-literal=password=YOUR_DB_PASSWORD
+
+
+
+  If Zabbix Server pods are in CrashLoopBackOff, check RDS connectivity
+  and verify the database/user exist and the Secret keys are correct.
+
+{{- if .Values.awsMonitor.enabled }}
+-----------------------------------------------------------------------
+  4. CloudWatch Metric Fetcher (zabbix-aws-monitor)
+-----------------------------------------------------------------------
+
+  # Check the aws-monitor pod is Running
+  kubectl get pods -n {{ .Release.Namespace }} -l app=zabbix-aws-monitor
+
+  # Check logs for metric collection activity
+  kubectl logs -n {{ .Release.Namespace }} -l app=zabbix-aws-monitor --tail=50
+
+  Prerequisites (docs/eks-prerequisites.md Step 6):
+    - IAM role with SSM read + STS AssumeRole
+    - EKS Pod Identity association for SA: {{ .Values.awsMonitor.serviceAccountName }}
+    - Zabbix API token stored in SSM: {{ .Values.awsMonitor.env.ssmTokenParam }}
+{{- end }}
+
+{{- if .Values.zabbixK8sMonitoring.enabled }}
+-----------------------------------------------------------------------
+  4. Kubernetes-Native Monitoring (post-install steps)
+-----------------------------------------------------------------------
+
+  a) Extract the K8s API token (after pods are Ready):
+     kubectl get secret {{ include "zabbix.k8sMonitoringTokenName" . }} \
+       -n {{ .Release.Namespace }} \
+       -o jsonpath='{.data.token}' | base64 -d
+
+  b) In Zabbix frontend — create a host, link templates:
+       "Kubernetes cluster state by HTTP"
+       "Kubernetes API server by HTTP"
+     Do NOT manually add "Kubernetes nodes by HTTP" or "Kubelet by HTTP"
+     — these are auto-discovered per-node by the cluster-state template LLD.
+
+  c) Set host macros:
+       {$KUBE.API.ENDPOINT}           = https://kubernetes.default.svc.cluster.local:443
+       {$KUBE.API.TOKEN}              = <token from step a>  [type: Secret text]
+       {$KUBE.STATE.METRICS.ENDPOINT} = http://kube-state-metrics.kube-system.svc.cluster.local:8080
+
+  See docs/eks-prerequisites.md for full detail and port 10250 requirements.
+{{- end }}
+
+=======================================================================

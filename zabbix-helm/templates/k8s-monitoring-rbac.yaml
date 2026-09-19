@@ -1,0 +1,130 @@
+{{/*
+=============================================================================
+Zabbix Kubernetes Monitoring RBAC
+=============================================================================
+Provides the ServiceAccount + token + RBAC that allow Zabbix Server to query
+the Kubernetes API directly for the Zabbix built-in HTTP templates:
+  - "Kubernetes cluster state by HTTP"
+  - "Kubernetes API server by HTTP"
+
+All resources are gated behind zabbixK8sMonitoring.enabled (default: true).
+
+Configurable via values.yaml:
+  zabbixK8sMonitoring.nameOverride     — SA / ClusterRole / ClusterRoleBinding name
+  zabbixK8sMonitoring.tokenSecretName  — token Secret name
+  zabbixK8sMonitoring.rbac.*           — per-apiGroup resource lists for ClusterRole
+
+Resources created:
+  - ServiceAccount       <nameOverride>        (<zabbix namespace>)
+  - ClusterRole          <nameOverride>        (cluster-scoped)
+  - ClusterRoleBinding   <nameOverride>        (cluster-scoped)
+  - Secret (SA token)    <tokenSecretName>     (<zabbix namespace>)
+
+Why a static Secret instead of relying on auto-mounted token projection?
+On Kubernetes 1.24+, ServiceAccount tokens are no longer automatically
+generated as long-lived Secrets. The explicit Secret of type
+kubernetes.io/service-account-token (with the sa.name annotation) triggers
+the token controller to populate a stable, long-lived token — which Zabbix
+can store as a macro and reuse across restarts without re-extracting it.
+*/}}
+
+{{- if .Values.zabbixK8sMonitoring.enabled }}
+---
+# ----------------------------------------------------------------------------
+# ServiceAccount — identity for Zabbix's K8s API queries
+# ----------------------------------------------------------------------------
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "zabbix.k8sMonitoringName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "zabbix.labels" . | nindent 4 }}
+    app: {{ include "zabbix.k8sMonitoringName" . }}
+
+---
+# ----------------------------------------------------------------------------
+# ClusterRole — read-only access to all K8s objects Zabbix HTTP templates use.
+# Resource lists are driven by values.yaml under zabbixK8sMonitoring.rbac.*
+# so individual resources can be added/removed without touching templates.
+# ----------------------------------------------------------------------------
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "zabbix.k8sMonitoringName" . }}
+  labels:
+    {{- include "zabbix.labels" . | nindent 4 }}
+    app: {{ include "zabbix.k8sMonitoringName" . }}
+rules:
+  # Core API group — nodes, pods, namespaces, PVCs, services, endpoints, events
+  - apiGroups: [""]
+    resources:
+      {{- range .Values.zabbixK8sMonitoring.rbac.coreResources }}
+      - {{ . }}
+      {{- end }}
+    verbs: ["get", "list", "watch"]
+
+  # apps group — workloads
+  - apiGroups: ["apps"]
+    resources:
+      {{- range .Values.zabbixK8sMonitoring.rbac.appsResources }}
+      - {{ . }}
+      {{- end }}
+    verbs: ["get", "list", "watch"]
+
+  # batch group — jobs and cronjobs
+  - apiGroups: ["batch"]
+    resources:
+      {{- range .Values.zabbixK8sMonitoring.rbac.batchResources }}
+      - {{ . }}
+      {{- end }}
+    verbs: ["get", "list", "watch"]
+
+  # metrics.k8s.io — node and pod resource usage (requires metrics-server)
+  - apiGroups: ["metrics.k8s.io"]
+    resources:
+      {{- range .Values.zabbixK8sMonitoring.rbac.metricsResources }}
+      - {{ . }}
+      {{- end }}
+    verbs: ["get", "list"]
+
+---
+# ----------------------------------------------------------------------------
+# ClusterRoleBinding
+# ----------------------------------------------------------------------------
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "zabbix.k8sMonitoringName" . }}
+  labels:
+    {{- include "zabbix.labels" . | nindent 4 }}
+    app: {{ include "zabbix.k8sMonitoringName" . }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "zabbix.k8sMonitoringName" . }}
+    namespace: {{ .Release.Namespace }}
+roleRef:
+  kind: ClusterRole
+  name: {{ include "zabbix.k8sMonitoringName" . }}
+  apiGroup: rbac.authorization.k8s.io
+
+---
+# ----------------------------------------------------------------------------
+# Static SA token Secret (required on K8s 1.24+ for a stable long-lived token)
+# The token controller populates .data.token automatically once created.
+# Extract after install:
+#   kubectl get secret <tokenSecretName> -n <namespace> \
+#     -o jsonpath='{.data.token}' | base64 -d
+# ----------------------------------------------------------------------------
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ include "zabbix.k8sMonitoringTokenName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "zabbix.labels" . | nindent 4 }}
+    app: {{ include "zabbix.k8sMonitoringName" . }}
+  annotations:
+    kubernetes.io/service-account.name: {{ include "zabbix.k8sMonitoringName" . }}
+type: kubernetes.io/service-account-token
+{{- end }}
