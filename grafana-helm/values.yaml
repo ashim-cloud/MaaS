@@ -64,7 +64,7 @@ grafana:
       # -- SSM Parameter Store path prefix for Grafana DB credentials.
       # Parameters expected: <path>/type, <path>/host, <path>/dbname,
       # <path>/user, <path>/password, <path>/sslMode (each a SecureString).
-      path: "/zabbix-dev/grafana-secret"
+      path: "/zabbix-test/grafana-secret"
       # -- AWS region where the SSM parameters live.
       region: "ap-south-1"
 
