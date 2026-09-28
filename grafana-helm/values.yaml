@@ -18,7 +18,7 @@ ingress:
   className: "alb-public"
 
   # -- Explicit ALB name — must match across all Ingresses sharing the ALB.
-  #loadBalancerName: "k8s-maas"
+  loadBalancerName: "k8s-maas"
 
   # -- Enable or disable the Ingress resource.
   enabled: true
