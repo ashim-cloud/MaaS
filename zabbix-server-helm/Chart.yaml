@@ -1,0 +1,22 @@
+apiVersion: v2
+name: zabbix-server
+description: >-
+  Zabbix Server (Native HA) for AWS EKS with external RDS PostgreSQL.
+  Deploys a StatefulSet with two containers per pod — the Zabbix Server
+  process and an HA label sidecar that polls Postgres ha_node state and
+  patches Kubernetes pod labels. An NLB Service routes external agent
+  traffic exclusively to the active HA node. DB credentials are injected
+  at startup via SSM Parameter Store and EKS Pod Identity — no
+  Kubernetes Secrets are created.
+type: application
+version: 0.1.0
+appVersion: "7.0.30"
+keywords:
+  - zabbix
+  - zabbix-server
+  - monitoring
+  - eks
+  - ha
+  - statefulset
+maintainers:
+  - name: Platform Team

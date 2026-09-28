@@ -1,0 +1,30 @@
+{{/*
+=============================================================================
+Zabbix Server — Headless Service
+=============================================================================
+Headless Service (clusterIP: None) for StatefulSet pod DNS.
+Provides stable DNS names for each pod:
+  <release>-0.<release>.<namespace>.svc.cluster.local
+  <release>-1.<release>.<namespace>.svc.cluster.local
+
+Required by the StatefulSet's serviceName field for stable network identity.
+*/}}
+
+{{- if .Values.zabbixServer.headlessService.enabled }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "zabbix-server.statefulSetName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "zabbix-server.labels" . | nindent 4 }}
+    app: zabbix-server
+spec:
+  clusterIP: None
+  selector:
+    app: zabbix-server
+  ports:
+    - port: 10051
+      targetPort: 10051
+{{- end }}

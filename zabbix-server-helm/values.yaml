@@ -1,0 +1,101 @@
+# =============================================================================
+# Zabbix Server Helm Chart — values.yaml
+# =============================================================================
+# This file defines all configurable values for the Zabbix Server.
+# Only server-related settings are included — web, aws-monitor, etc.
+# are managed by their own separate charts.
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# Global Zabbix Settings
+# ---------------------------------------------------------------------------
+
+zabbix:
+  # -- Zabbix version — single source of truth for the server image tag.
+  version: "7.0.30"
+  # -- Base image variant (e.g. "ubuntu", "alpine", "ol").
+  baseImage: "ubuntu"
+
+# ---------------------------------------------------------------------------
+# VPC / Networking
+# ---------------------------------------------------------------------------
+
+vpc:
+  # -- REQUIRED. AWS VPC ID where the EKS cluster runs.
+  id: "vpc-0bc5c5ce263d7b3a0"
+  # -- REQUIRED. List of public subnet IDs for NLB placement.
+  # Must contain at least 2 subnets (AWS requires 2+ AZs).
+  publicSubnetIds: ["subnet-0d6782d8a98cc5561","subnet-025071875ab6a5dba","subnet-082486d3eaea6a8a2"]
+
+# ---------------------------------------------------------------------------
+# Zabbix Server — StatefulSet (Native HA)
+# ---------------------------------------------------------------------------
+
+zabbixServer:
+  # -- Number of server replicas. Zabbix native HA supports 2+ nodes;
+  # one will be elected active, the rest are standby.
+  replicaCount: 2
+
+  image:
+    # -- Server image repository. Tag is auto-composed from zabbix.baseImage
+    # and zabbix.version (e.g. zabbix/zabbix-server-pgsql:ubuntu-7.0.30).
+    repository: "zabbix/zabbix-server-pgsql"
+
+  # -- Pod anti-affinity to spread server pods across nodes.
+  affinity:
+    # -- "preferred" (soft) or "required" (hard).
+    # Original manifest uses "preferred".
+    type: "preferred"
+    # -- Weight for preferred anti-affinity (1-100). Ignored if type=required.
+    weight: 100
+
+  # -- ServiceAccount configuration for the HA sidecar.
+  serviceAccount:
+    # -- Create the ServiceAccount resource.
+    create: true
+
+  # -- RBAC configuration for the HA label sidecar.
+  rbac:
+    # -- Create the Role and RoleBinding for pod label patching.
+    create: true
+
+  # -- HA label sidecar — reads HA state from Postgres and patches pod labels.
+  haSidecar:
+    # -- Sidecar image. alpine/k8s includes kubectl and psql prerequisites.
+    image: "alpine/k8s:1.31.0"
+    # -- Label name applied to pods to indicate HA role (active/standby).
+    # This label is also used in the NLB Service selector.
+    labelName: "role"
+    # -- How often (seconds) the sidecar polls Postgres for HA state.
+    pollIntervalSeconds: 60
+
+  # -- SSM init container configuration.
+  ssmInit:
+    # -- Image used to fetch SSM parameters at pod startup.
+    # Must include the AWS CLI. The public ECR image is the official AWS CLI
+    # container and does not require registry authentication from within EKS.
+    image: "public.ecr.aws/aws-cli/aws-cli:latest"
+    # -- AWS region where the SSM parameters live.
+    region: "ap-south-1"
+    # -- SSM Parameter Store path prefix for Zabbix DB credentials.
+    # Parameters expected: <path>/host, <path>/port, <path>/user,
+    # <path>/password, <path>/dbname (each a SecureString).
+    parameterPath: "/zabbix-dev/zabbix-db-secret"
+
+  # -- Headless Service configuration for StatefulSet pod DNS.
+  headlessService:
+    # -- Enable or disable the headless Service.
+    enabled: true
+
+  # -- NLB Service configuration for external agent connectivity.
+  nlbService:
+    # -- Enable or disable the NLB Service.
+    enabled: true
+    # -- Custom name for the AWS Network Load Balancer.
+    # Sets the service.beta.kubernetes.io/aws-load-balancer-name annotation.
+    # If empty, AWS auto-generates a name from the Service metadata.
+    loadBalancerName: "maas"
+    # -- "internet-facing" or "internal".
+    scheme: "internet-facing"
+    # -- Preserve the original client IP for agent connections.
+    preserveClientIp: true
