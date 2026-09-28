@@ -25,7 +25,7 @@ ingress:
 
   # -- Subdomain for the Grafana dashboard.
   # Route53: Create an ALIAS record  dashboard.prestacknx.co.in → ALB hostname.
-  grafanaHost: "dashboard.hamms.space"
+  grafanaHost: "grafana.hamms.space"
 
   # -- ALB health check configuration for the Grafana target group.
   # /api/health is Grafana's official health endpoint — always returns 200 OK.
