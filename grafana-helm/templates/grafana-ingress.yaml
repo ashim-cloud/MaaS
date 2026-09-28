@@ -1,0 +1,76 @@
+{{/*
+=============================================================================
+Grafana — ALB Ingress
+=============================================================================
+This Ingress handles ONLY the Grafana dashboard:
+  dashboard.prestacknx.co.in → grafana Service (port 80 internally)
+
+ALB-level configuration (scheme, subnets, ACM cert, WAF, SSL policy,
+group name) is centralized in the IngressClassParams resource
+(alb-public / maas-public-alb). This Ingress only defines:
+  - Per-target-group settings (target-type, health check, backend protocol)
+  - Per-rule settings (ssl-redirect)
+  - Host-based routing rule
+
+WHY Grafana needs a separate Ingress (not shared with Zabbix Web):
+  Grafana's root path (/) returns HTTP 302 (redirect to /login), which
+  the ALB treats as unhealthy. Grafana's official health endpoint
+  /api/health returns HTTP 200. Each Ingress gets its own target group
+  with independent health check configuration.
+*/}}
+
+{{- if .Values.ingress.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "grafana.ingressName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "grafana.labels" . | nindent 4 }}
+    app: {{ include "grafana.deploymentName" . }}
+  annotations:
+    # ── ALB name (shared across all Ingresses in the group) ──────────────────
+    alb.ingress.kubernetes.io/load-balancer-name: {{ .Values.ingress.loadBalancerName | quote }}
+
+    # ── Per-target-group settings ────────────────────────────────────────────
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/backend-protocol: HTTP
+
+    # ── Health check (per-target-group) ──────────────────────────────────────
+    # /api/health is Grafana's official health endpoint — always returns 200.
+    alb.ingress.kubernetes.io/healthcheck-path: {{ .Values.ingress.healthCheck.path | quote }}
+    alb.ingress.kubernetes.io/success-codes: {{ .Values.ingress.healthCheck.successCodes | quote }}
+
+    # ── HTTP → HTTPS redirect (per-rule) ─────────────────────────────────────
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP":80},{"HTTPS":443}]'
+    alb.ingress.kubernetes.io/ssl-redirect: "443"
+
+spec:
+  ingressClassName: {{ .Values.ingress.className | quote }}
+  rules:
+    {{- if .Values.ingress.grafanaHost }}
+    - host: {{ .Values.ingress.grafanaHost | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "grafana.deploymentName" . }}
+                port:
+                  number: {{ .Values.grafana.service.port }}
+    {{- else }}
+    {{/* No host set — catch-all rule. */}}
+    - http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "grafana.deploymentName" . }}
+                port:
+                  number: {{ .Values.grafana.service.port }}
+    {{- end }}
+
+{{- end }}

@@ -1,0 +1,104 @@
+# =============================================================================
+# Grafana Helm Chart — values.yaml
+# =============================================================================
+# Standalone Grafana chart. Only Grafana-related settings are included.
+# Zabbix server, web, and aws-monitor are managed by their own charts.
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# Ingress — ALB Configuration
+# ---------------------------------------------------------------------------
+# ALB-level settings (scheme, subnets, ACM cert, WAF, SSL policy, group name)
+# are centralized in the IngressClassParams resource (alb-public / maas-public-alb),
+# deployed separately via ArgoCD. This chart only configures per-target-group
+# and per-rule settings.
+
+ingress:
+  # -- IngressClass name that references the shared ALB IngressClassParams.
+  className: "alb-public"
+
+  # -- Explicit ALB name — must match across all Ingresses sharing the ALB.
+  #loadBalancerName: "k8s-maas"
+
+  # -- Enable or disable the Ingress resource.
+  enabled: true
+
+  # -- Subdomain for the Grafana dashboard.
+  # Route53: Create an ALIAS record  dashboard.prestacknx.co.in → ALB hostname.
+  grafanaHost: "dashboard.hamms.space"
+
+  # -- ALB health check configuration for the Grafana target group.
+  # /api/health is Grafana's official health endpoint — always returns 200 OK.
+  # Grafana's root (/) returns 302 redirect which ALB treats as unhealthy.
+  healthCheck:
+    path: "/api/health"
+    successCodes: "200"
+
+# ---------------------------------------------------------------------------
+# Grafana — Deployment
+# ---------------------------------------------------------------------------
+
+grafana:
+  # -- Number of Grafana replicas.
+  replicaCount: 1
+
+  image:
+    # -- Grafana image repository.
+    repository: "grafana/grafana"
+    # -- Grafana image tag. Pinned to a specific version for reproducibility.
+    # Check https://github.com/grafana/grafana/releases for newer versions.
+    tag: "13.2.2"
+
+  # -- Grafana plugins to install on startup (comma-separated).
+  # alexanderzobnin-zabbix-app is required for the Zabbix data source.
+  plugins: "alexanderzobnin-zabbix-app"
+
+  # -- ServiceAccount configuration for EKS Pod Identity.
+  serviceAccount:
+    # -- Create the ServiceAccount resource.
+    create: true
+
+  # -- SSM-based DB credentials for Grafana's external PostgreSQL database.
+  database:
+    ssm:
+      # -- SSM Parameter Store path prefix for Grafana DB credentials.
+      # Parameters expected: <path>/type, <path>/host, <path>/dbname,
+      # <path>/user, <path>/password, <path>/sslMode (each a SecureString).
+      path: "/zabbix-dev/grafana-secret"
+      # -- AWS region where the SSM parameters live.
+      region: "ap-south-1"
+
+  # -- GF_SERVER_ROOT_URL — full public URL Grafana uses for asset/redirect URLs.
+  # With subdomain routing, Grafana serves at ROOT of its subdomain.
+  # https:// is hardcoded because ALB terminates SSL — %(protocol)s resolves
+  # to "http" internally which breaks login redirects.
+  # %(domain)s is filled at runtime from GF_SERVER_DOMAIN env var.
+  rootUrl: "https://%(domain)s/"
+
+  # -- ClusterIP Service configuration.
+  service:
+    # -- Enable or disable the Service resource.
+    enabled: true
+    # -- Service port exposed to the cluster.
+    port: 80
+    # -- Container port Grafana listens on.
+    targetPort: 3000
+
+  # -- Container resource requests and limits.
+  resources:
+    requests:
+      cpu: 200m
+      memory: 300Mi
+    limits:
+      cpu: 1
+      memory: 600Mi
+
+  # -- Iframe embedding & cookie security settings.
+  # Required for Grafana dashboards to render inside cross-origin iframes.
+  security:
+    # -- Allow Grafana to be embedded in iframes (GF_SECURITY_ALLOW_EMBEDDING).
+    allowEmbedding: true
+    # -- Mark session cookies as Secure/HTTPS-only (GF_SECURITY_COOKIE_SECURE).
+    cookieSecure: true
+    # -- SameSite cookie attribute. "none" required for cross-origin iframes.
+    cookieSameSite: "none"

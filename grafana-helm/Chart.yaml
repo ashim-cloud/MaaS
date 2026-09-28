@@ -1,0 +1,18 @@
+apiVersion: v2
+name: grafana
+description: >-
+  Grafana dashboard for AWS EKS with external RDS PostgreSQL and
+  Zabbix data source integration. DB credentials are injected via
+  SSM Parameter Store and EKS Pod Identity — no Kubernetes Secrets
+  are created. Shares the MaaS ALB via IngressClassParams (alb-public).
+type: application
+version: 0.1.0
+appVersion: "13.2.2"
+keywords:
+  - grafana
+  - dashboard
+  - monitoring
+  - eks
+  - zabbix
+maintainers:
+  - name: Platform Team

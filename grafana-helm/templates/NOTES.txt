@@ -1,0 +1,65 @@
+{{/*
+=============================================================================
+NOTES.txt — Post-install instructions for Grafana
+=============================================================================
+*/}}
+=======================================================================
+  Grafana Dashboard — Deployed Successfully
+=======================================================================
+
+Namespace: {{ .Release.Namespace }}
+Image:     {{ include "grafana.image" . }}
+Replicas:  {{ .Values.grafana.replicaCount }}
+
+-----------------------------------------------------------------------
+  1. Check Grafana Status
+-----------------------------------------------------------------------
+
+  kubectl get pods -n {{ .Release.Namespace }} -l app={{ include "grafana.deploymentName" . }} -o wide
+
+-----------------------------------------------------------------------
+  2. Access Grafana
+-----------------------------------------------------------------------
+
+  {{- if .Values.ingress.grafanaHost }}
+  URL: https://{{ .Values.ingress.grafanaHost }}/
+  {{- else }}
+  # Port-forward for local access:
+  kubectl port-forward -n {{ .Release.Namespace }} svc/{{ include "grafana.deploymentName" . }} 3000:80
+  # Then open: http://localhost:3000
+  {{- end }}
+
+  Default login: admin / admin
+  (You will be prompted to change the password on first login)
+
+-----------------------------------------------------------------------
+  3. Check SSM Init Logs (if pods are not starting)
+-----------------------------------------------------------------------
+
+  kubectl logs -n {{ .Release.Namespace }} -l app={{ include "grafana.deploymentName" . }} \
+    -c ssm-init
+
+-----------------------------------------------------------------------
+  PREREQUISITES REMINDER
+-----------------------------------------------------------------------
+
+  This chart assumes the following already exist:
+
+  1. Namespace: {{ .Release.Namespace }}
+     kubectl create namespace {{ .Release.Namespace }}
+
+  2. SSM parameters under: {{ .Values.grafana.database.ssm.path }}
+     Required keys: type, host, dbname, user, password, sslMode
+
+  3. IAM role with permissions:
+     - ssm:GetParameter* on the Grafana DB credential parameters
+     - kms:Decrypt on the KMS key
+
+  4. EKS Pod Identity association for ServiceAccount:
+     {{ include "grafana.serviceAccountName" . }}
+
+  5. RDS PostgreSQL database reachable from the EKS cluster.
+
+  6. IngressClass "alb-public" with IngressClassParams configured.
+
+=======================================================================

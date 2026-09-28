@@ -1,0 +1,27 @@
+{{/*
+=============================================================================
+Grafana — ClusterIP Service
+=============================================================================
+The ALB Ingress routes Grafana traffic to this service on port 80.
+Internally forwards to Grafana's containerPort 3000.
+*/}}
+
+{{- if .Values.grafana.service.enabled }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "grafana.deploymentName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "grafana.labels" . | nindent 4 }}
+    app: {{ include "grafana.deploymentName" . }}
+spec:
+  type: ClusterIP
+  selector:
+    app: {{ include "grafana.deploymentName" . }}
+  ports:
+    - name: http
+      port: {{ .Values.grafana.service.port }}
+      targetPort: http
+{{- end }}

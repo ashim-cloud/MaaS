@@ -1,0 +1,132 @@
+{{/*
+=============================================================================
+Grafana — Deployment
+=============================================================================
+Deploys the Grafana dashboard with the alexanderzobnin-zabbix-app plugin
+pre-installed, backed by an external PostgreSQL database.
+
+Secrets method: AWS SSM Parameter Store + EKS Pod Identity
+  An initContainer (ssm-init) fetches all parameters under
+  grafana.database.ssm.path at pod startup, writes each to a file in an
+  in-memory volume (emptyDir: medium: Memory), and the Grafana container
+  reads them from /secrets/*. Nothing is stored in etcd or on EC2 disk.
+
+NOTE: GF_SERVER_SERVE_FROM_SUB_PATH is NOT needed with subdomain routing.
+      Grafana serves at the root (/) of dashboard.prestacknx.co.in.
+      GF_SERVER_ROOT_URL is configurable via grafana.rootUrl.
+*/}}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "grafana.deploymentName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "grafana.labels" . | nindent 4 }}
+    app: {{ include "grafana.deploymentName" . }}
+spec:
+  replicas: {{ .Values.grafana.replicaCount }}
+  selector:
+    matchLabels:
+      app: {{ include "grafana.deploymentName" . }}
+  template:
+    metadata:
+      labels:
+        {{- include "grafana.labels" . | nindent 8 }}
+        app: {{ include "grafana.deploymentName" . }}
+    spec:
+      serviceAccountName: {{ include "grafana.serviceAccountName" . }}
+
+      # ---- In-memory volume — secrets are written here by the initContainer ----
+      volumes:
+        - name: secrets-vol
+          emptyDir:
+            medium: Memory
+
+      # ---- initContainer: pull SSM parameters before Grafana starts -----------
+      initContainers:
+        - name: ssm-init
+          image: public.ecr.aws/aws-cli/aws-cli:latest
+          env:
+            - name: AWS_DEFAULT_REGION
+              value: {{ .Values.grafana.database.ssm.region | quote }}
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -e
+              SSM_PATH={{ .Values.grafana.database.ssm.path | quote }}
+              aws ssm get-parameters-by-path \
+                --path "$SSM_PATH" \
+                --with-decryption \
+                --recursive \
+                --query "Parameters[*].[Name,Value]" \
+                --output text \
+              | while IFS=$'\t' read -r name value; do
+                  key=$(basename "$name")
+                  printf '%s' "$value" > "/secrets/$key"
+                done
+              echo "ssm-init: wrote $(ls /secrets | wc -l) secret(s) from $SSM_PATH"
+          volumeMounts:
+            - name: secrets-vol
+              mountPath: /secrets
+
+      containers:
+        - name: grafana
+          image: {{ include "grafana.image" . }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.grafana.service.targetPort }}
+
+          # ---- DB credentials sourced from in-memory /secrets/* ---------------
+          command:
+            - /bin/sh
+            - -c
+            - |
+              export GF_DATABASE_TYPE=$(cat /secrets/type)
+              export GF_DATABASE_HOST=$(cat /secrets/host)
+              export GF_DATABASE_NAME=$(cat /secrets/dbname)
+              export GF_DATABASE_USER=$(cat /secrets/user)
+              export GF_DATABASE_PASSWORD=$(cat /secrets/password)
+              export GF_DATABASE_SSL_MODE=$(cat /secrets/sslMode)
+              exec grafana server \
+                --homepath=/usr/share/grafana \
+                --config=/etc/grafana/grafana.ini \
+                --packaging=docker \
+                cfg:default.log.mode=console \
+                cfg:default.paths.data=/var/lib/grafana \
+                cfg:default.paths.logs=/var/log/grafana \
+                cfg:default.paths.plugins=/var/lib/grafana/plugins \
+                cfg:default.paths.provisioning=/etc/grafana/provisioning
+
+          env:
+            # ---- Plugin installation ----------------------------------------
+            - name: GF_INSTALL_PLUGINS
+              value: {{ .Values.grafana.plugins | quote }}
+
+            # ---- Server / domain routing ------------------------------------
+            - name: GF_SERVER_DOMAIN
+              value: {{ .Values.ingress.grafanaHost | default "localhost" | quote }}
+            - name: GF_SERVER_ROOT_URL
+              value: {{ .Values.grafana.rootUrl | quote }}
+
+            # ---- Iframe embedding / cookie security --------------------------
+            - name: GF_SECURITY_ALLOW_EMBEDDING
+              value: {{ .Values.grafana.security.allowEmbedding | quote }}
+            - name: GF_SECURITY_COOKIE_SECURE
+              value: {{ .Values.grafana.security.cookieSecure | quote }}
+            - name: GF_SECURITY_COOKIE_SAMESITE
+              value: {{ .Values.grafana.security.cookieSameSite | quote }}
+
+          volumeMounts:
+            - name: secrets-vol
+              mountPath: /secrets
+              readOnly: true
+
+          resources:
+            requests:
+              cpu: {{ .Values.grafana.resources.requests.cpu }}
+              memory: {{ .Values.grafana.resources.requests.memory }}
+            limits:
+              cpu: {{ .Values.grafana.resources.limits.cpu }}
+              memory: {{ .Values.grafana.resources.limits.memory }}
