@@ -80,7 +80,7 @@ zabbixServer:
     # -- SSM Parameter Store path prefix for Zabbix DB credentials.
     # Parameters expected: <path>/host, <path>/port, <path>/user,
     # <path>/password, <path>/dbname (each a SecureString).
-    parameterPath: "/zabbix-dev/zabbix-db-secret"
+    parameterPath: "/zabbix-test/zabbix-db-secret"
 
   # -- Headless Service configuration for StatefulSet pod DNS.
   headlessService:
