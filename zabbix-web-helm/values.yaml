@@ -98,7 +98,7 @@ zabbixWeb:
     enabled: true
     # -- Subdomain for the Zabbix web frontend.
     # Route53: Create an ALIAS record  monitoring.prestacknx.co.in → ALB hostname.
-    zabbixHost: "monitoring.prestacknx.co.in"
+    zabbixHost: "monitoring.hamms.space"
 
   # -- ClusterIP Service configuration.
   service:
@@ -117,8 +117,8 @@ zabbixWeb:
       cpu: 200m
       memory: 300Mi
     limits:
-      cpu: 1
-      memory: 1Gi
+      cpu: 500m
+      memory: 600Mi
 
   # -- HorizontalPodAutoscaler configuration.
   # When enabled: true, the Deployment's `replicas` field is omitted entirely
