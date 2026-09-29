@@ -1,0 +1,19 @@
+apiVersion: v2
+name: zabbix-web
+description: >-
+  Zabbix Web Frontend (nginx + pgsql) for AWS EKS.
+  Deploys the Zabbix web UI with ALB Ingress, HPA autoscaling,
+  SSM-based secret injection via EKS Pod Identity, and custom
+  branding (Precision logos). Connects to an external Zabbix Server
+  via the zabbix-server-active NLB service.
+type: application
+version: 0.1.0
+appVersion: "7.0.30"
+keywords:
+  - zabbix
+  - zabbix-web
+  - monitoring
+  - eks
+  - frontend
+maintainers:
+  - name: Platform Team
