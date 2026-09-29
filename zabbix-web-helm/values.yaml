@@ -54,7 +54,7 @@ ingress:
 db:
   ssm:
     # -- SSM Parameter Store path prefix that holds all Zabbix DB credentials.
-    path: "/zabbix-dev/zabbix-db-secret"
+    path: "/zabbix-test/zabbix-db-secret"
     # -- AWS region where the SSM parameters live.
     region: "ap-south-1"
 
@@ -98,7 +98,7 @@ zabbixWeb:
     enabled: true
     # -- Subdomain for the Zabbix web frontend.
     # Route53: Create an ALIAS record  monitoring.prestacknx.co.in → ALB hostname.
-    zabbixHost: "monitoring.prestacknx.co.in"
+    zabbixHost: "monitoring.hamms.space"
 
   # -- ClusterIP Service configuration.
   service:
@@ -117,8 +117,8 @@ zabbixWeb:
       cpu: 200m
       memory: 300Mi
     limits:
-      cpu: 1
-      memory: 1Gi
+      cpu: 400m
+      memory: 600Mi
 
   # -- HorizontalPodAutoscaler configuration.
   # When enabled: true, the Deployment's `replicas` field is omitted entirely
@@ -128,9 +128,9 @@ zabbixWeb:
     # -- Enable or disable the HPA.
     enabled: true
     # -- Minimum number of web pods the HPA will maintain.
-    minReplicas: 2
+    minReplicas: 1
     # -- Maximum number of web pods the HPA may scale up to.
-    maxReplicas: 5
+    maxReplicas: 2
     # -- CPU utilization (%) that triggers scale-up.
     targetCPUUtilizationPercentage: 90
     # -- Memory utilization (%) that triggers scale-up.
