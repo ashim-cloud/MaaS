@@ -128,9 +128,9 @@ zabbixWeb:
     # -- Enable or disable the HPA.
     enabled: true
     # -- Minimum number of web pods the HPA will maintain.
-    minReplicas: 2
+    minReplicas: 1
     # -- Maximum number of web pods the HPA may scale up to.
-    maxReplicas: 5
+    maxReplicas: 2
     # -- CPU utilization (%) that triggers scale-up.
     targetCPUUtilizationPercentage: 90
     # -- Memory utilization (%) that triggers scale-up.
