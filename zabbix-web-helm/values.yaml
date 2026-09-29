@@ -54,7 +54,7 @@ ingress:
 db:
   ssm:
     # -- SSM Parameter Store path prefix that holds all Zabbix DB credentials.
-    path: "/zabbix-dev/zabbix-db-secret"
+    path: "/zabbix-test/zabbix-db-secret"
     # -- AWS region where the SSM parameters live.
     region: "ap-south-1"
 
