@@ -1,0 +1,56 @@
+{{/*
+=============================================================================
+Zabbix Web — Custom Branding ConfigMap
+=============================================================================
+Loads Precision branding assets (CSS theme, logos, favicon) from the
+files/branding/ directory and creates a ConfigMap that is mounted into
+the zabbix-web container to replace default Zabbix branding.
+
+Files loaded:
+  - blue-theme.css         → /usr/share/zabbix/assets/styles/blue-theme.css
+  - dark-theme.css         → /usr/share/zabbix/assets/styles/dark-theme.css
+  - hc-light.css           → /usr/share/zabbix/assets/styles/hc-light.css
+  - hc-dark.css            → /usr/share/zabbix/assets/styles/hc-dark.css
+  - precision-full-logo.svg    → /usr/share/zabbix/assets/precision-full-logo.svg
+  - precision-sidebar-logo.svg → /usr/share/zabbix/assets/precision-sidebar-logo.svg
+  - precision-compact-logo.svg → /usr/share/zabbix/assets/precision-compact-logo.svg
+  - precision-favicon.ico      → /usr/share/zabbix/favicon.ico (binaryData)
+
+Gated behind branding.enabled (default: true).
+*/}}
+
+{{- if .Values.branding.enabled }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Values.branding.configMapName }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "zabbix-web.labels" . | nindent 4 }}
+    app: zabbix-web
+data:
+  blue-theme.css: |
+{{ .Files.Get "files/branding/blue-theme.css" | indent 4 }}
+
+  dark-theme.css: |
+{{ .Files.Get "files/branding/dark-theme.css" | indent 4 }}
+
+  hc-light.css: |
+{{ .Files.Get "files/branding/hc-light.css" | indent 4 }}
+
+  hc-dark.css: |
+{{ .Files.Get "files/branding/hc-dark.css" | indent 4 }}
+
+  precision-full-logo.svg: |
+{{ .Files.Get "files/branding/precision-full-logo.svg" | indent 4 }}
+
+  precision-sidebar-logo.svg: |
+{{ .Files.Get "files/branding/precision-sidebar-logo.svg" | indent 4 }}
+
+  precision-compact-logo.svg: |
+{{ .Files.Get "files/branding/precision-compact-logo.svg" | indent 4 }}
+
+binaryData:
+  favicon.ico: {{ .Files.Get "files/branding/precision-favicon.ico" | b64enc }}
+{{- end }}
