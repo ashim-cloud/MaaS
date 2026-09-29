@@ -98,7 +98,7 @@ zabbixWeb:
     enabled: true
     # -- Subdomain for the Zabbix web frontend.
     # Route53: Create an ALIAS record  monitoring.prestacknx.co.in → ALB hostname.
-    zabbixHost: "monitoring.hamms.space"
+    zabbixHost: "zabbix.hamms.space"
 
   # -- ClusterIP Service configuration.
   service:
