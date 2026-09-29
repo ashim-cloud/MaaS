@@ -1,0 +1,75 @@
+{{/*
+=============================================================================
+Zabbix Web — Custom Branding ConfigMap
+=============================================================================
+Loads Precision branding assets (CSS theme, logos, favicon) from the
+files/branding/ directory and creates ConfigMaps that are mounted into
+the zabbix-web container to replace default Zabbix branding.
+
+Split into multiple ConfigMaps to avoid Kubernetes 1MB ConfigMap limit.
+
+Gated behind branding.enabled (default: true).
+*/}}
+
+{{- if .Values.branding.enabled }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Values.branding.configMapName }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "zabbix-web.labels" . | nindent 4 }}
+    app: zabbix-web
+data:
+  blue-theme.css: |
+{{ .Files.Get "files/branding/blue-theme.css" | indent 4 }}
+
+  precision-full-logo.svg: |
+{{ .Files.Get "files/branding/precision-full-logo.svg" | indent 4 }}
+
+  precision-sidebar-logo.svg: |
+{{ .Files.Get "files/branding/precision-sidebar-logo.svg" | indent 4 }}
+
+  precision-compact-logo.svg: |
+{{ .Files.Get "files/branding/precision-compact-logo.svg" | indent 4 }}
+
+binaryData:
+  favicon.ico: {{ .Files.Get "files/branding/precision-favicon.ico" | b64enc }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Values.branding.configMapName }}-dark-theme
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "zabbix-web.labels" . | nindent 4 }}
+    app: zabbix-web
+data:
+  dark-theme.css: |
+{{ .Files.Get "files/branding/dark-theme.css" | indent 4 }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Values.branding.configMapName }}-hc-light
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "zabbix-web.labels" . | nindent 4 }}
+    app: zabbix-web
+data:
+  hc-light.css: |
+{{ .Files.Get "files/branding/hc-light.css" | indent 4 }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Values.branding.configMapName }}-hc-dark
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "zabbix-web.labels" . | nindent 4 }}
+    app: zabbix-web
+data:
+  hc-dark.css: |
+{{ .Files.Get "files/branding/hc-dark.css" | indent 4 }}
+{{- end }}
