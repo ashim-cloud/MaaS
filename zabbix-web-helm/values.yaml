@@ -1,0 +1,169 @@
+# =============================================================================
+# Zabbix Web Helm Chart — values.yaml
+# =============================================================================
+# This file defines all configurable values for the Zabbix Web frontend.
+# Only web-related settings are included — server, kube-state-metrics, etc.
+# are managed by their own separate charts.
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# Global Zabbix Settings
+# ---------------------------------------------------------------------------
+
+zabbix:
+  # -- Zabbix version — single source of truth for the web image tag.
+  version: "7.0.30"
+  # -- Base image variant (e.g. "ubuntu", "alpine", "ol").
+  baseImage: "ubuntu"
+
+# ---------------------------------------------------------------------------
+# Ingress — ALB Configuration
+# ---------------------------------------------------------------------------
+# ALB-level settings (scheme, subnets, ACM cert, WAF, SSL policy, group name)
+# are centralized in the IngressClassParams resource (alb-public / maas-public-alb),
+# deployed separately via ArgoCD. This chart only configures per-target-group
+# and per-rule settings.
+
+ingress:
+  # -- IngressClass name that references the shared ALB IngressClassParams.
+  # The IngressClassParams (maas-public-alb) defines: scheme, subnets,
+  # ACM cert, WAF, SSL policy, and group name (maas).
+  className: "alb-public"
+
+  # -- Explicit ALB name — must match across all Ingresses sharing the ALB.
+  loadBalancerName: "k8s-maas"
+
+  # -- ALB health check configuration for the Zabbix web target group.
+  # These are per-target-group settings (not ALB-level).
+  healthCheck:
+    # Zabbix has no dedicated health endpoint — root path returns 200.
+    path: "/"
+    successCodes: "200"
+
+# ---------------------------------------------------------------------------
+# Database — External RDS PostgreSQL (SSM Parameter Store + Pod Identity)
+# ---------------------------------------------------------------------------
+# Zabbix Web needs DB credentials to render the frontend.
+# Credentials are stored as SSM SecureString parameters and injected into
+# pods at startup via an initContainer. No Kubernetes Secret is created —
+# credentials never touch etcd or EC2 disk.
+#
+# SSM parameters expected under db.ssm.path (each a SecureString):
+#   <path>/host, <path>/port, <path>/dbname, <path>/user, <path>/password
+
+db:
+  ssm:
+    # -- SSM Parameter Store path prefix that holds all Zabbix DB credentials.
+    path: "/zabbix-dev/zabbix-db-secret"
+    # -- AWS region where the SSM parameters live.
+    region: "ap-south-1"
+
+# ---------------------------------------------------------------------------
+# Zabbix Server Connection
+# ---------------------------------------------------------------------------
+# The web frontend connects to the Zabbix Server via the NLB service name
+# (zabbix-server-active), which within the cluster resolves via ClusterIP.
+
+zabbixServer:
+  # -- The Kubernetes service name for the Zabbix Server (active HA node).
+  # This is the service from the zabbix-server chart/deployment.
+  # Within the cluster, this resolves to the active HA pod's ClusterIP.
+  serviceName: "zabbix-server-active"
+
+# ---------------------------------------------------------------------------
+# Zabbix Web — Deployment (nginx + pgsql frontend)
+# ---------------------------------------------------------------------------
+
+zabbixWeb:
+  # -- Number of web frontend replicas.
+  # Ignored when autoscaling.enabled is true (HPA manages replica count).
+  replicaCount: 1
+
+  image:
+    # -- Web image repository. Tag is auto-composed from zabbix.baseImage
+    # and zabbix.version (e.g. zabbix/zabbix-web-nginx-pgsql:ubuntu-7.0.30).
+    repository: "zabbix/zabbix-web-nginx-pgsql"
+
+  # -- PHP timezone for the Zabbix frontend.
+  phpTz: "Asia/Kolkata"
+
+  # -- ServiceAccount configuration for EKS Pod Identity.
+  serviceAccount:
+    # -- Create the ServiceAccount resource.
+    create: true
+
+  # -- ALB Ingress configuration.
+  ingress:
+    # -- Enable or disable the Ingress resource.
+    enabled: true
+    # -- Subdomain for the Zabbix web frontend.
+    # Route53: Create an ALIAS record  monitoring.prestacknx.co.in → ALB hostname.
+    zabbixHost: "monitoring.prestacknx.co.in"
+
+  # -- ClusterIP Service configuration.
+  service:
+    # -- Enable or disable the Service resource.
+    enabled: true
+    # -- Service type (ClusterIP is standard for ALB-backed ingress).
+    type: ClusterIP
+    # -- Service port exposed to the cluster.
+    port: 80
+    # -- Container port the service routes traffic to.
+    targetPort: 8080
+
+  # -- Container resource requests and limits for the zabbix-web container.
+  resources:
+    requests:
+      cpu: 200m
+      memory: 300Mi
+    limits:
+      cpu: 1
+      memory: 1Gi
+
+  # -- HorizontalPodAutoscaler configuration.
+  # When enabled: true, the Deployment's `replicas` field is omitted entirely
+  # so Helm upgrades do not reset the live HPA-managed replica count.
+  # When enabled: false, the static zabbixWeb.replicaCount value is used.
+  autoscaling:
+    # -- Enable or disable the HPA.
+    enabled: true
+    # -- Minimum number of web pods the HPA will maintain.
+    minReplicas: 2
+    # -- Maximum number of web pods the HPA may scale up to.
+    maxReplicas: 5
+    # -- CPU utilization (%) that triggers scale-up.
+    targetCPUUtilizationPercentage: 90
+    # -- Memory utilization (%) that triggers scale-up.
+    targetMemoryUtilizationPercentage: 90
+    behavior:
+      scaleUp:
+        # -- Seconds to wait after a scale event before acting on another.
+        stabilizationWindowSeconds: 60
+        policy:
+          # -- "Pods" = add N pods per period; "Percent" = add N% of current.
+          type: Pods
+          # -- Number of pods to add per scale-up period.
+          value: 1
+          # -- How often (seconds) a scale-up step can fire.
+          periodSeconds: 60
+      scaleDown:
+        # -- Seconds to wait before scaling down after load drops.
+        stabilizationWindowSeconds: 240
+        policy:
+          type: Pods
+          # -- Number of pods to remove per scale-down period.
+          value: 1
+          # -- How often (seconds) a scale-down step can fire.
+          periodSeconds: 120
+
+# ---------------------------------------------------------------------------
+# Custom Branding — Precision Logos ConfigMap
+# ---------------------------------------------------------------------------
+
+branding:
+  # -- Enable or disable the custom branding ConfigMap.
+  # When enabled, logo/CSS files from files/branding/ are mounted into the
+  # zabbix-web container to replace default Zabbix branding.
+  enabled: true
+  # -- ConfigMap name for the branding assets.
+  configMapName: "precision-zabbix-logos"
